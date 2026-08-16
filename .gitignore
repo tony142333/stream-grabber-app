@@ -1,1 +1,24 @@
 dockerfile
+
+# Python environment
+venv/
+playwright-env/
+__pycache__/
+*.pyc
+*.pyo
+
+# Downloaded files & storage
+downloads/
+*.mp4
+*.mkv
+*.ts
+*.part
+*.aria2
+
+# Logs & System
+*.log
+nohup.out
+.DS_Store
+.env
+
+
