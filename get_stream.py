@@ -19,7 +19,8 @@ base_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', base_name).strip("._")
 if not base_name:
     base_name = "downloaded_video"
 
-download_dir = os.path.expanduser("/home/ubuntu/downloads")
+# Set default download destination to ~/downloads
+download_dir = os.path.expanduser("~/downloads")
 os.makedirs(download_dir, exist_ok=True)
 output_file = f"{base_name}.mp4"
 
