@@ -12,6 +12,9 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_PATH = os.path.join(BASE_DIR, "get_stream.py")
+
 log_queue = None
 main_loop = None
 
@@ -37,14 +40,13 @@ def push_log_sync(msg: str):
         asyncio.run_coroutine_threadsafe(log_queue.put(msg), main_loop)
 
 def stream_process_worker(task_id: str, target_url: str):
-    script_path = "/home/ubuntu/get_stream.py"
-    python_bin = sys.executable  # Uses current active venv python
+    python_bin = sys.executable
 
     push_log_sync(f"[{task_id}] [*] Starting task for: {target_url}")
 
     master_fd, slave_fd = pty.openpty()
     p = subprocess.Popen(
-        [python_bin, script_path, target_url],
+        [python_bin, SCRIPT_PATH, target_url],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
@@ -118,7 +120,7 @@ def index():
         <div class="input-card">
           <textarea id="targetUrls" placeholder="Paste single or multiple streaming URLs (one per line)..."></textarea>
           <div class="btn-row">
-            <span class="hint">Native Host Execution | Multi-stream ready</span>
+            <span class="hint">Dynamic Path Resolution | Multi-stream ready</span>
             <button onclick="startBatch()">Run Task(s)</button>
           </div>
         </div>
