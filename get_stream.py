@@ -11,7 +11,7 @@ if len(sys.argv) < 2:
 
 target_url = sys.argv[1]
 
-# Extract clean filename slug
+# Extract filename slug
 parsed_path = urlparse(target_url).path.strip("/")
 last_segment = parsed_path.split("/")[-1] if parsed_path else "video"
 base_name = re.sub(r'\.(html|htm|php|asp|aspx)$', '', last_segment, flags=re.IGNORECASE)
@@ -19,7 +19,7 @@ base_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', base_name).strip("._")
 if not base_name:
     base_name = "downloaded_video"
 
-download_dir = "/downloads"
+download_dir = os.path.expanduser("/home/ubuntu/downloads")
 os.makedirs(download_dir, exist_ok=True)
 output_file = f"{base_name}.mp4"
 
@@ -61,7 +61,6 @@ with sync_playwright() as p:
     try:
         page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
 
-        # Settle and engage frame players
         for _ in range(12):
             if bigcdn_stream_url:
                 break

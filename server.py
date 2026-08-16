@@ -5,6 +5,7 @@ import asyncio
 import subprocess
 import re
 import uuid
+import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -36,12 +37,14 @@ def push_log_sync(msg: str):
         asyncio.run_coroutine_threadsafe(log_queue.put(msg), main_loop)
 
 def stream_process_worker(task_id: str, target_url: str):
-    script_path = "/app/get_stream.py"
+    script_path = "/home/ubuntu/get_stream.py"
+    python_bin = sys.executable  # Uses current active venv python
+
     push_log_sync(f"[{task_id}] [*] Starting task for: {target_url}")
 
     master_fd, slave_fd = pty.openpty()
     p = subprocess.Popen(
-        ["python3", script_path, target_url],
+        [python_bin, script_path, target_url],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
@@ -115,13 +118,13 @@ def index():
         <div class="input-card">
           <textarea id="targetUrls" placeholder="Paste single or multiple streaming URLs (one per line)..."></textarea>
           <div class="btn-row">
-            <span class="hint">Supports concurrent background downloads</span>
+            <span class="hint">Native Host Execution | Multi-stream ready</span>
             <button onclick="startBatch()">Run Task(s)</button>
           </div>
         </div>
 
         <div class="terminal" id="term">
-          <div class="log-entry" style="color: #8b949e;">[+] Console connected on port 8085. Ready for stream extraction.</div>
+          <div class="log-entry" style="color: #8b949e;">[+] Host Console connected on port 8085. Ready.</div>
         </div>
       </div>
 
