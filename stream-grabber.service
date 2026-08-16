@@ -1,0 +1,16 @@
+[Unit]
+Description=EC2 Stream Grabber FastAPI Console
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/stream-grabber-app
+ExecStart=/home/ubuntu/stream-grabber-app/venv/bin/uvicorn server:app --host 0.0.0.0 --port 8085
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
