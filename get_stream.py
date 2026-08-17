@@ -166,4 +166,3 @@ for line in iter(proc.stdout.readline, ''):
 
 proc.stdout.close()
 proc.wait()
-sys.exit(proc.returncode)

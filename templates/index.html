@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EC2 Stream Grabber Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+    <div>
+        <div class="brand">
+            <div class="brand-icon">⚡</div>
+            <div class="brand-title">Grabber Pro</div>
+        </div>
+        <div class="nav-list">
+            <div class="nav-item active" onclick="switchView('active', this)">
+                <span>Active Downloads</span>
+                <span class="nav-badge" id="activeBadge">0</span>
+            </div>
+            <div class="nav-item" onclick="switchView('completed', this)">
+                <span>Downloaded Files</span>
+                <span class="nav-badge" id="completedBadge">0</span>
+            </div>
+            <div class="nav-item" onclick="switchView('terminal', this)">
+                <span>Terminal Output</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="storage-box">
+        <div class="storage-title">
+            <span>Host Storage</span>
+            <span id="diskFreeText">-- GB Free</span>
+        </div>
+        <div class="storage-bar-track">
+            <div class="storage-bar-fill" id="diskFill"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Main Content -->
+<div class="main-content">
+    <div class="topbar">
+        <div class="topbar-title" id="viewTitle">Active Downloads</div>
+        <button class="btn-new-task" onclick="toggleInputCard()">+ New URL(s)</button>
+    </div>
+
+    <!-- Active Downloads View -->
+    <div class="view-panel active" id="panel-active">
+        <div class="input-card" id="urlInputCard" style="display: none;">
+            <textarea id="targetUrls" placeholder="Paste streaming page URLs (one per line)..."></textarea>
+            <div style="display: flex; justify-content: flex-end; gap: 8px;">
+                <button style="background: transparent; color: var(--text-muted); border: 1px solid var(--border); padding: 8px 16px; border-radius: 6px; cursor: pointer;" onclick="toggleInputCard()">Cancel</button>
+                <button class="btn-new-task" onclick="submitBatch()">Start Sniffing & Download</button>
+            </div>
+        </div>
+
+        <div id="activeList" style="display: flex; flex-direction: column; gap: 0.75rem;">
+            <div id="noActiveMsg" style="text-align: center; padding: 3rem; color: var(--text-muted); font-size: 0.9rem;">
+                No active tasks running. Click <strong>+ New URL(s)</strong> above to start.
+            </div>
+        </div>
+    </div>
+
+    <!-- Downloaded Files View -->
+    <div class="view-panel" id="panel-completed">
+        <div class="table-container">
+            <table>
+                <thead>
+                <tr>
+                    <th>Filename</th>
+                    <th>Size</th>
+                    <th>Saved Date</th>
+                    <th>Destination</th>
+                </tr>
+                </thead>
+                <tbody id="filesTableBody">
+                <tr>
+                    <td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Loading files...</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Live Terminal View -->
+    <div class="view-panel" id="panel-terminal" style="height: calc(100vh - 70px);">
+        <div class="terminal-container">
+            <div class="terminal-header">
+                <span>HOST LIVE PTY LOG STREAM</span>
+                <span style="color: var(--accent);">Port 8085</span>
+            </div>
+            <div class="terminal-logs" id="terminalLogs">
+                <div class="log-line" style="color: var(--accent);">[+] Connected to EC2 terminal engine.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
