@@ -32,7 +32,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="EC2 Stream Grabber Console", lifespan=lifespan)
 
-# Mount external static assets
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 class BatchRunRequest(BaseModel):
@@ -50,6 +49,7 @@ def push_log_sync(msg: str):
 def stream_process_worker(task_id: str, target_url: str):
     python_bin = sys.executable
 
+    push_log_sync(f"STATUS:{task_id}:SEARCHING:Initializing Playwright session...")
     push_log_sync(f"[{task_id}] [*] Starting task for: {target_url}")
 
     master_fd, slave_fd = pty.openpty()
@@ -82,7 +82,24 @@ def stream_process_worker(task_id: str, target_url: str):
 
                     clean_line = strip_ansi(line).strip()
                     if clean_line:
+                        # Pipe raw log to terminal view
                         push_log_sync(f"[{task_id}] {clean_line}")
+
+                        # Map stdout lines to frontend state events
+                        if "[*] Navigating to:" in clean_line:
+                            push_log_sync(f"STATUS:{task_id}:SEARCHING:Navigating to target page...")
+                        elif "SAVING TO:" in clean_line:
+                            filename = clean_line.split("/")[-1].strip()
+                            push_log_sync(f"FILENAME:{task_id}:{filename}")
+                        elif "[+] Sniffed MP4 URL:" in clean_line or "[*] Probing CDN path" in clean_line:
+                            push_log_sync(f"STATUS:{task_id}:FOUND:Stream found. Probing highest quality...")
+                        elif "HIGHEST QUALITY DETECTED:" in clean_line:
+                            push_log_sync(f"STATUS:{task_id}:DOWNLOADING:Starting download...")
+                        elif clean_line.startswith("[#") and ("DL:" in clean_line or "%" in clean_line):
+                            push_log_sync(f"PROGRESS:{task_id}:{clean_line}")
+                        elif "[-] Error:" in clean_line:
+                            push_log_sync(f"STATUS:{task_id}:FAILED:{clean_line}")
+
             except OSError:
                 break
 
@@ -97,7 +114,12 @@ def stream_process_worker(task_id: str, target_url: str):
 
     os.close(master_fd)
     p.wait()
-    push_log_sync(f"[{task_id}] [✓] Task completed with exit code {p.returncode}")
+    if p.returncode == 0:
+        push_log_sync(f"STATUS:{task_id}:COMPLETED:Finished")
+        push_log_sync(f"[{task_id}] [✓] Task completed successfully")
+    else:
+        push_log_sync(f"STATUS:{task_id}:FAILED:Process exited with code {p.returncode}")
+        push_log_sync(f"[{task_id}] [✗] Task failed with exit code {p.returncode}")
 
 @app.get("/")
 def index():
@@ -119,6 +141,10 @@ def list_completed_files():
     if os.path.exists(DOWNLOADS_PATH):
         for entry in os.scandir(DOWNLOADS_PATH):
             if entry.is_file() and not entry.name.endswith(".aria2"):
+                # Hide partial downloads currently managed by aria2c
+                if os.path.exists(f"{entry.path}.aria2"):
+                    continue
+
                 stat = entry.stat()
                 files_list.append({
                     "name": entry.name,
@@ -131,10 +157,12 @@ def list_completed_files():
 @app.post("/api/run-batch")
 async def run_batch(req: BatchRunRequest):
     loop = asyncio.get_running_loop()
+    created_tasks = []
     for raw_url in req.urls:
         t_id = uuid.uuid4().hex[:6]
+        created_tasks.append({"id": t_id, "url": raw_url})
         loop.run_in_executor(None, stream_process_worker, t_id, raw_url)
-    return {"status": "queued", "count": len(req.urls)}
+    return {"status": "queued", "tasks": created_tasks}
 
 @app.get("/api/logs")
 async def stream_logs():

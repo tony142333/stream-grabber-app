@@ -58,7 +58,7 @@ async function loadCompletedFiles() {
 }
 loadCompletedFiles();
 
-function getOrCreateTask(taskId) {
+function getOrCreateTask(taskId, initialName = "Sniffing stream from source...") {
   if (tasks[taskId]) return tasks[taskId];
   const noMsg = document.getElementById('noActiveMsg');
   if (noMsg) noMsg.style.display = 'none';
@@ -68,8 +68,8 @@ function getOrCreateTask(taskId) {
   card.id = `task-${taskId}`;
   card.innerHTML = `
     <div class="task-header">
-      <div class="task-name" id="name-${taskId}">Sniffing stream from source...</div>
-      <span class="badge badge-sniffing" id="badge-${taskId}">Sniffing</span>
+      <div class="task-name" id="name-${taskId}">${initialName}</div>
+      <span class="badge badge-sniffing" id="badge-${taskId}">Searching</span>
     </div>
     <div class="progress-bar-track">
       <div class="progress-bar-fill" id="fill-${taskId}"></div>
@@ -87,7 +87,8 @@ function getOrCreateTask(taskId) {
     badge: card.querySelector(`#badge-${taskId}`),
     fill: card.querySelector(`#fill-${taskId}`),
     speed: card.querySelector(`#speed-${taskId}`),
-    pct: card.querySelector(`#pct-${taskId}`)
+    pct: card.querySelector(`#pct-${taskId}`),
+    completed: false
   };
   updateActiveCount();
   return tasks[taskId];
@@ -96,6 +97,10 @@ function getOrCreateTask(taskId) {
 function updateActiveCount() {
   const active = Object.values(tasks).filter(t => !t.completed).length;
   document.getElementById('activeBadge').textContent = active;
+  const noMsg = document.getElementById('noActiveMsg');
+  if (noMsg) {
+    noMsg.style.display = active === 0 ? 'block' : 'none';
+  }
 }
 
 function parseAria(str) {
@@ -122,15 +127,24 @@ evtSource.onmessage = function(event) {
   terminalLogs.scrollTop = terminalLogs.scrollHeight;
 
   if (raw.startsWith("STATUS:")) {
-    const [, taskId, status, msg] = raw.split(":");
+    const parts = raw.split(":");
+    const taskId = parts[1];
+    const status = parts[2];
+    const msg = parts.slice(3).join(":");
     const task = getOrCreateTask(taskId);
 
-    if (status === "STARTING") {
+    if (status === "SEARCHING") {
       task.badge.className = "badge badge-sniffing";
-      task.badge.textContent = "Sniffing";
-    } else if (status === "SNIFFED") {
+      task.badge.textContent = "Searching";
+      task.speed.textContent = msg || "Navigating to target page...";
+    } else if (status === "FOUND") {
+      task.badge.className = "badge badge-sniffing";
+      task.badge.textContent = "Found";
+      task.speed.textContent = msg || "Probing stream resolution...";
+    } else if (status === "DOWNLOADING") {
       task.badge.className = "badge badge-downloading";
       task.badge.textContent = "Downloading";
+      task.speed.textContent = msg || "Downloading stream...";
     } else if (status === "COMPLETED") {
       task.badge.className = "badge badge-completed";
       task.badge.textContent = "Finished";
@@ -148,7 +162,9 @@ evtSource.onmessage = function(event) {
       updateActiveCount();
     }
   } else if (raw.startsWith("FILENAME:")) {
-    const [, taskId, filename] = raw.split(":");
+    const parts = raw.split(":");
+    const taskId = parts[1];
+    const filename = parts.slice(2).join(":");
     const task = getOrCreateTask(taskId);
     task.name.textContent = filename;
   } else if (raw.startsWith("PROGRESS:")) {
@@ -156,8 +172,11 @@ evtSource.onmessage = function(event) {
     const taskId = parts[1];
     const progStr = parts.slice(2).join(":");
     const task = getOrCreateTask(taskId);
-    const p = parseAria(progStr);
 
+    task.badge.className = "badge badge-downloading";
+    task.badge.textContent = "Downloading";
+
+    const p = parseAria(progStr);
     if (p.percent !== null) {
       task.fill.style.width = `${p.percent}%`;
       task.pct.textContent = `${p.percent}%`;
@@ -179,9 +198,16 @@ async function submitBatch() {
   input.value = '';
   toggleInputCard();
 
-  await fetch('/api/run-batch', {
+  const res = await fetch('/api/run-batch', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ urls })
   });
+
+  const data = await res.json();
+  if (data.tasks) {
+    data.tasks.forEach(t => {
+      getOrCreateTask(t.id, t.url);
+    });
+  }
 }
