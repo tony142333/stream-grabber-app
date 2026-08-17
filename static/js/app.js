@@ -66,6 +66,7 @@ function getOrCreateTask(taskId, initialName = "Sniffing stream from source...")
   const card = document.createElement('div');
   card.className = 'task-card';
   card.id = `task-${taskId}`;
+  card.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
   card.innerHTML = `
     <div class="task-header">
       <div class="task-name" id="name-${taskId}">${initialName}</div>
@@ -92,6 +93,23 @@ function getOrCreateTask(taskId, initialName = "Sniffing stream from source...")
   };
   updateActiveCount();
   return tasks[taskId];
+}
+
+function removeTaskCard(taskId) {
+  const task = tasks[taskId];
+  if (!task || !task.element) return;
+
+  // Smooth fade and slide out
+  task.element.style.opacity = '0';
+  task.element.style.transform = 'translateY(-10px)';
+
+  setTimeout(() => {
+    if (task.element.parentNode) {
+      task.element.parentNode.removeChild(task.element);
+    }
+    delete tasks[taskId];
+    updateActiveCount();
+  }, 500);
 }
 
 function updateActiveCount() {
@@ -152,14 +170,26 @@ evtSource.onmessage = function(event) {
       task.pct.textContent = "100%";
       task.speed.textContent = "Saved to ~/downloads";
       task.completed = true;
+
       updateActiveCount();
       loadCompletedFiles();
+
+      // Automatically remove finished card after 4 seconds
+      setTimeout(() => {
+        removeTaskCard(taskId);
+      }, 4000);
+
     } else if (status === "FAILED") {
       task.badge.className = "badge badge-failed";
       task.badge.textContent = "Failed";
       task.speed.textContent = msg || "Error";
       task.completed = true;
       updateActiveCount();
+
+      // Automatically remove failed card after 8 seconds
+      setTimeout(() => {
+        removeTaskCard(taskId);
+      }, 8000);
     }
   } else if (raw.startsWith("FILENAME:")) {
     const parts = raw.split(":");
