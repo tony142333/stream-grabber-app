@@ -10,7 +10,6 @@
 </head>
 <body>
 
-<!-- Sidebar -->
 <div class="sidebar">
     <div>
         <div class="brand">
@@ -29,6 +28,10 @@
             <div class="nav-item" onclick="switchView('terminal', this)">
                 <span>Terminal Output</span>
             </div>
+            <div class="nav-item" onclick="switchView('configs', this)">
+                <span>Site Configs</span>
+                <span class="nav-badge" id="configsBadge">0</span>
+            </div>
         </div>
     </div>
 
@@ -43,14 +46,12 @@
     </div>
 </div>
 
-<!-- Main Content -->
 <div class="main-content">
     <div class="topbar">
         <div class="topbar-title" id="viewTitle">Active Downloads</div>
         <button class="btn-new-task" onclick="toggleInputCard()">+ New URL(s)</button>
     </div>
 
-    <!-- Active Downloads View -->
     <div class="view-panel active" id="panel-active">
         <div class="input-card" id="urlInputCard" style="display: none;">
             <textarea id="targetUrls" placeholder="Paste streaming page URLs (one per line)..."></textarea>
@@ -67,7 +68,6 @@
         </div>
     </div>
 
-    <!-- Downloaded Files View -->
     <div class="view-panel" id="panel-completed">
         <div class="table-container">
             <table>
@@ -88,7 +88,6 @@
         </div>
     </div>
 
-    <!-- Live Terminal View -->
     <div class="view-panel" id="panel-terminal" style="height: calc(100vh - 70px);">
         <div class="terminal-container">
             <div class="terminal-header">
@@ -100,6 +99,8 @@
             </div>
         </div>
     </div>
+
+    <div class="view-panel" id="panel-configs"></div>
 </div>
 
 <script src="/static/js/app.js"></script>

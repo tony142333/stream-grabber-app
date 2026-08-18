@@ -1,5 +1,7 @@
 const tasks = {};
 const terminalLogs = document.getElementById('terminalLogs');
+let configPanelLoaded = false;
+let currentConfigs = [];
 
 function switchView(viewName, el) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
@@ -10,11 +12,13 @@ function switchView(viewName, el) {
   const titles = {
     'active': 'Active Downloads',
     'completed': 'Downloaded Files (~/downloads)',
-    'terminal': 'Live Mirroring Terminal'
+    'terminal': 'Live Mirroring Terminal',
+    'configs': 'Site Stream Configurations'
   };
   document.getElementById('viewTitle').textContent = titles[viewName];
 
   if (viewName === 'completed') loadCompletedFiles();
+  if (viewName === 'configs') loadConfigPanel();
 }
 
 function toggleInputCard() {
@@ -58,6 +62,153 @@ async function loadCompletedFiles() {
 }
 loadCompletedFiles();
 
+// --- Configuration Management Extensions ---
+async function loadConfigPanel() {
+  if (!configPanelLoaded) {
+    const res = await fetch('/api/config-panel-template');
+    const html = await res.text();
+    document.getElementById('panel-configs').innerHTML = html;
+    configPanelLoaded = true;
+    toggleTitleModeControls();
+  }
+  await fetchConfigs();
+}
+
+async function fetchConfigs() {
+  try {
+    const res = await fetch('/api/configs');
+    const data = await res.json();
+    currentConfigs = data.sites || [];
+    document.getElementById('configsBadge').textContent = currentConfigs.length;
+    renderConfigGrid();
+  } catch(e) {}
+}
+fetchConfigs();
+
+function renderConfigGrid() {
+  const container = document.getElementById('configPresetsGrid');
+  if (!container) return;
+
+  if (currentConfigs.length === 0) {
+    container.innerHTML = '<div style="color: var(--text-muted); padding: 2rem; grid-column: 1/-1; text-align: center;">No site configurations created yet. Click "+ Add New Site Config" above.</div>';
+    return;
+  }
+
+  container.innerHTML = currentConfigs.map(c => `
+    <div class="task-card" style="gap: 0.85rem;">
+      <div style="display:flex; justify-content:space-between; align-items:start;">
+        <div>
+          <h4 style="color:#fff; font-size: 0.95rem;">${c.name}</h4>
+          <span style="font-size:0.75rem; color:var(--accent); font-family:var(--font-mono);">${c.match_domain}</span>
+        </div>
+        <span class="badge badge-sniffing" style="text-transform:none;">${c.title_mode === 'html_tag' ? 'HTML Selector' : 'URL Regex'}</span>
+      </div>
+
+      <div style="font-size: 0.78rem; color: var(--text-muted); font-family: var(--font-mono); background: var(--bg-input); padding: 8px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+        ${c.example_url || 'No example URL provided'}
+      </div>
+
+      <div style="display:flex; gap: 4px; flex-wrap: wrap;">
+        ${(c.quality_preference || []).map(q => `<span style="font-size: 0.7rem; background: var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text-main); font-family: var(--font-mono);">${q}p</span>`).join('')}
+      </div>
+
+      <div style="display:flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px;">
+        <button onclick="editConfigPreset('${c.id}')" style="background: transparent; color: var(--accent); border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.75rem;">Edit</button>
+        <button onclick="deleteConfigPreset('${c.id}')" style="background: transparent; color: var(--danger); border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.75rem;">Delete</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function toggleTitleModeControls() {
+  const mode = document.getElementById('cfgTitleMode').value;
+  const label = document.getElementById('lblTitlePattern');
+  const input = document.getElementById('cfgTitlePattern');
+
+  if (mode === 'html_tag') {
+    label.textContent = 'Target HTML CSS Selector';
+    input.placeholder = 'e.g., h1.video-title, .video-header h2';
+  } else {
+    label.textContent = 'Target Page URL Regex Pattern (Capturing Group $1)';
+    input.placeholder = 'e.g., /watch/([^/]+)\\.html';
+  }
+}
+
+function openConfigModal() {
+  document.getElementById('formDrawerTitle').textContent = "Create Site Rule";
+  document.getElementById('cfgId').value = "cfg_" + Math.random().toString(36).substr(2, 6);
+  document.getElementById('lblConfigId').textContent = "Auto-generated ID";
+  document.getElementById('cfgName').value = "";
+  document.getElementById('cfgDomain').value = "";
+  document.getElementById('cfgExample').value = "";
+  document.getElementById('cfgTitleMode').value = "page_url";
+  document.getElementById('cfgTitlePattern').value = "";
+  document.getElementById('cfgKeywords').value = ".mp4, .m3u8";
+  document.getElementById('cfgClicks').value = ".fluid_initial_play_button, #player, .play";
+  document.getElementById('cfgQualities').value = "2160, 1080, 720, 480";
+
+  toggleTitleModeControls();
+  document.getElementById('configFormDrawer').style.display = 'flex';
+}
+
+function editConfigPreset(id) {
+  const c = currentConfigs.find(item => item.id === id);
+  if (!c) return;
+
+  document.getElementById('formDrawerTitle').textContent = `Edit Site Rule: ${c.name}`;
+  document.getElementById('cfgId').value = c.id;
+  document.getElementById('lblConfigId').textContent = `ID: ${c.id}`;
+  document.getElementById('cfgName').value = c.name || "";
+  document.getElementById('cfgDomain').value = c.match_domain || "";
+  document.getElementById('cfgExample').value = c.example_url || "";
+  document.getElementById('cfgTitleMode').value = c.title_mode || "page_url";
+  document.getElementById('cfgTitlePattern').value = c.title_pattern || "";
+  document.getElementById('cfgKeywords').value = (c.sniff_keywords || []).join(", ");
+  document.getElementById('cfgClicks').value = (c.click_selectors || []).join(", ");
+  document.getElementById('cfgQualities').value = (c.quality_preference || []).join(", ");
+
+  toggleTitleModeControls();
+  document.getElementById('configFormDrawer').style.display = 'flex';
+}
+
+function closeConfigModal() {
+  document.getElementById('configFormDrawer').style.display = 'none';
+}
+
+async function submitConfigPreset() {
+  const payload = {
+    id: document.getElementById('cfgId').value,
+    name: document.getElementById('cfgName').value.trim(),
+    match_domain: document.getElementById('cfgDomain').value.trim(),
+    example_url: document.getElementById('cfgExample').value.trim(),
+    title_mode: document.getElementById('cfgTitleMode').value,
+    title_pattern: document.getElementById('cfgTitlePattern').value.trim(),
+    sniff_keywords: document.getElementById('cfgKeywords').value.split(',').map(s => s.trim()).filter(Boolean),
+    click_selectors: document.getElementById('cfgClicks').value.split(',').map(s => s.trim()).filter(Boolean),
+    quality_preference: document.getElementById('cfgQualities').value.split(',').map(s => s.trim()).filter(Boolean)
+  };
+
+  if (!payload.name || !payload.match_domain) {
+    alert("Please provide a Site Display Name and Match Domain.");
+    return;
+  }
+
+  await fetch('/api/configs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  closeConfigModal();
+  await fetchConfigs();
+}
+
+async function deleteConfigPreset(id) {
+  if (!confirm("Are you sure you want to delete this site configuration profile?")) return;
+  await fetch(`/api/configs/${id}`, { method: 'DELETE' });
+  await fetchConfigs();
+}
+
 function getOrCreateTask(taskId, initialName = "Sniffing stream from source...") {
   if (tasks[taskId]) return tasks[taskId];
   const noMsg = document.getElementById('noActiveMsg');
@@ -99,7 +250,6 @@ function removeTaskCard(taskId) {
   const task = tasks[taskId];
   if (!task || !task.element) return;
 
-  // Smooth fade and slide out
   task.element.style.opacity = '0';
   task.element.style.transform = 'translateY(-10px)';
 
@@ -174,7 +324,6 @@ evtSource.onmessage = function(event) {
       updateActiveCount();
       loadCompletedFiles();
 
-      // Automatically remove finished card after 4 seconds
       setTimeout(() => {
         removeTaskCard(taskId);
       }, 4000);
@@ -186,7 +335,6 @@ evtSource.onmessage = function(event) {
       task.completed = true;
       updateActiveCount();
 
-      // Automatically remove failed card after 8 seconds
       setTimeout(() => {
         removeTaskCard(taskId);
       }, 8000);

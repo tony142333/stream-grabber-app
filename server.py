@@ -15,6 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
+# --- Config Engine Router Hook ---
+from modules.config_manager.config_core import config_router, CONFIG_DIR
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPT_PATH = os.path.join(BASE_DIR, "get_stream.py")
 DOWNLOADS_PATH = os.path.expanduser("~/downloads")
@@ -32,7 +35,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="EC2 Stream Grabber Console", lifespan=lifespan)
 
+# Mount Static Files & Config Router
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+app.include_router(config_router, prefix="/api")
 
 class BatchRunRequest(BaseModel):
     urls: list[str]
@@ -91,7 +96,7 @@ def stream_process_worker(task_id: str, target_url: str):
                         elif "SAVING TO:" in clean_line:
                             filename = clean_line.split("/")[-1].strip()
                             push_log_sync(f"FILENAME:{task_id}:{filename}")
-                        elif "[+] Sniffed MP4 URL:" in clean_line or "[*] Probing CDN path" in clean_line:
+                        elif "[+] Sniffed" in clean_line or "[*] Probing CDN path" in clean_line or "[+] Matched site profile" in clean_line:
                             push_log_sync(f"STATUS:{task_id}:FOUND:Stream found. Probing highest quality...")
                         elif "HIGHEST QUALITY DETECTED:" in clean_line:
                             push_log_sync(f"STATUS:{task_id}:DOWNLOADING:Starting download...")
@@ -125,6 +130,10 @@ def stream_process_worker(task_id: str, target_url: str):
 def index():
     return FileResponse(os.path.join(BASE_DIR, "templates", "index.html"))
 
+@app.get("/api/config-panel-template")
+def get_config_panel_template():
+    return FileResponse(os.path.join(CONFIG_DIR, "config_panel.html"))
+
 @app.get("/api/sysinfo")
 def get_sys_info():
     total, used, free = shutil.disk_usage(DOWNLOADS_PATH)
@@ -141,7 +150,6 @@ def list_completed_files():
     if os.path.exists(DOWNLOADS_PATH):
         for entry in os.scandir(DOWNLOADS_PATH):
             if entry.is_file() and not entry.name.endswith(".aria2"):
-                # Hide partial downloads currently managed by aria2c
                 if os.path.exists(f"{entry.path}.aria2"):
                     continue
 

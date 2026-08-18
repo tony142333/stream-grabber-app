@@ -1,0 +1,68 @@
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+    <span style="font-size: 0.9rem; color: var(--text-muted);">Configure custom dynamic network stream matching criteria per host site.</span>
+    <button class="btn-new-task" onclick="openConfigModal()">+ Add New Site Config</button>
+</div>
+
+<div class="input-card" id="configFormDrawer" style="display: none; border-left: 4px solid var(--accent);">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+        <h4 id="formDrawerTitle" style="color: #fff; font-size: 1rem;">Configure Site Rule</h4>
+        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted);" id="lblConfigId"></span>
+    </div>
+
+    <input type="hidden" id="cfgId" />
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <div>
+            <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Site Display Name</label>
+            <input type="text" id="cfgName" placeholder="e.g., BigCDN Network" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none;" />
+        </div>
+        <div>
+            <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Target Match Domain</label>
+            <input type="text" id="cfgDomain" placeholder="e.g., bigcdn.cc" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none;" />
+        </div>
+    </div>
+
+    <div>
+        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Example Target Page URL</label>
+        <input type="text" id="cfgExample" placeholder="e.g., https://s6.bigcdn.cc/watch/video-slug.html" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none; font-family:var(--font-mono); font-size:0.8rem;" />
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 1rem;">
+        <div>
+            <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Title Strategy Mode</label>
+            <select id="cfgTitleMode" onchange="toggleTitleModeControls()" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none;">
+                <option value="page_url">Page URL Slug Parsing</option>
+                <option value="html_tag">HTML Tag DOM Selector</option>
+            </select>
+        </div>
+        <div>
+            <label id="lblTitlePattern" style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Custom Parsing Parameter</label>
+            <input type="text" id="cfgTitlePattern" placeholder="" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none; font-family:var(--font-mono); font-size:0.8rem;" />
+        </div>
+    </div>
+
+    <div>
+        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Sniff Matching Keywords (Comma separated values)</label>
+        <input type="text" id="cfgKeywords" placeholder="e.g., bigcdn.cc, .mp4, master.m3u8" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none; font-family:var(--font-mono); font-size:0.8rem;" />
+    </div>
+
+    <div>
+        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Auto Click Selectors (Comma separated DOM chain layout)</label>
+        <input type="text" id="cfgClicks" placeholder="e.g., .fluid_initial_play_button, button.play, #player" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none; font-family:var(--font-mono); font-size:0.8rem;" />
+    </div>
+
+    <div>
+        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Preferred Quality Hierarchy (Space/Comma separated hierarchy ranking order)</label>
+        <input type="text" id="cfgQualities" placeholder="e.g., 2160, 1080, 720, 480" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none; font-family:var(--font-mono); font-size:0.8rem;" />
+    </div>
+
+    <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 0.4rem;">
+        <button style="background: transparent; color: var(--text-muted); border: 1px solid var(--border); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size:0.85rem;" onclick="closeConfigModal()">Cancel</button>
+        <button class="btn-new-task" onclick="submitConfigPreset()">Save Dynamic Config Profile</button>
+    </div>
+</div>
+
+<div id="configPresetsGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1rem;">
+</div>
+
+
