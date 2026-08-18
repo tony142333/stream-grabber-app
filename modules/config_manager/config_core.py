@@ -1,108 +1,107 @@
 import os
 import json
-import re
-from pydantic import BaseModel, Field
-from fastapi import APIRouter, HTTPException
-
-CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(CONFIG_DIR, "sites_config.json")
-
-config_router = APIRouter()
-
-class SiteConfigModel(BaseModel):
-    id: str = Field(..., description="Unique alphanumeric URL slug ID")
-    name: str
-    match_domain: str
-    example_url: str
-    engine_mode: str = "standard"  # 'standard' or 'tamperdev'
-    sniff_keywords: list[str] = []
-    title_mode: str = "page_url"   # 'page_url' or 'html_tag'
-    title_pattern: str = ""
-    quality_preference: list[str] = ["1080", "720", "480"]
-    click_selectors: list[str] = []
-
-class ConfigListResponse(BaseModel):
-    sites: list[SiteConfigModel]
-
+from urllib.parse import urlparse
 
 class ConfigEngine:
-    def __init__(self):
-        self.config_path = CONFIG_FILE
-        self.default_config = {
-            "id": "default_fallback",
-            "name": "Global Fallback Handler",
-            "match_domain": "*",
-            "example_url": "",
-            "engine_mode": "standard",
-            "sniff_keywords": [".mp4", ".m3u8", "video", "stream"],
-            "title_mode": "page_url",
-            "title_pattern": "",
-            "quality_preference": ["2160", "4k", "1440", "1080", "720", "480", "360"],
-            "click_selectors": ["video", "button"]
-        }
+    def __init__(self, config_path: str = None):
+        if config_path:
+            self.config_path = config_path
+        else:
+            # Anchor path directly to this module's directory
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.config_path = os.path.join(base_dir, "sites_config.json")
 
-    def _load_raw(self) -> dict:
+        self.ensure_config_exists()
+
+    def ensure_config_exists(self):
+        """Creates default sites_config.json if missing."""
         if not os.path.exists(self.config_path):
-            return {"sites": []}
+            os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+            default_data = {
+                "sites": [
+                    {
+                        "id": "bigcdn",
+                        "name": "BigCDN Network",
+                        "match_domain": "bigcdn.cc",
+                        "engine_mode": "bigcdn"
+                    },
+                    {
+                        "id": "fullhdporn",
+                        "name": "FullHDPorn",
+                        "match_domain": "fullhdporn.net",
+                        "engine_mode": "tamperdev"
+                    }
+                ]
+            }
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(default_data, f, indent=2)
+
+    def load_configs(self) -> dict:
+        """Loads and returns all site configurations."""
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            print(f"[-] Config load error: {e}", flush=True)
             return {"sites": []}
 
-    def match_url(self, url: str) -> dict:
-        data = self._load_raw()
-        for site in data.get("sites", []):
-            domain = site.get("match_domain", "").strip().lower()
-            if domain and domain in url.lower():
-                return site
-        return self.default_config
-
-
-def _write_config_raw(data: dict):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-@config_router.get("/configs", response_model=ConfigListResponse)
-def get_configs():
-    if not os.path.exists(CONFIG_FILE):
-        return {"sites": []}
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-@config_router.post("/configs")
-def save_or_update_config(site: SiteConfigModel):
-    data = {"sites": []}
-    if os.path.exists(CONFIG_FILE):
+    def save_configs(self, data: dict) -> bool:
+        """Persists site configurations to disk."""
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            pass
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            return True
+        except Exception as e:
+            print(f"[-] Config save error: {e}", flush=True)
+            return False
 
-    existing_index = next((i for i, item in enumerate(data["sites"]) if item["id"] == site.id), None)
+    def get_all_sites(self) -> list:
+        """Returns list of all configured site profiles."""
+        return self.load_configs().get("sites", [])
 
-    if existing_index is not None:
-        data["sites"][existing_index] = site.model_dump()
-    else:
-        data["sites"].append(site.model_dump())
+    def save_site(self, site_data: dict) -> bool:
+        """Adds or updates a site profile by ID or match_domain."""
+        data = self.load_configs()
+        sites = data.get("sites", [])
 
-    _write_config_raw(data)
-    return {"status": "success", "message": f"Saved configuration profile: {site.name}"}
+        site_id = site_data.get("id") or site_data.get("match_domain")
+        site_data["id"] = site_id
 
-@config_router.delete("/configs/{site_id}")
-def delete_config(site_id: str):
-    if not os.path.exists(CONFIG_FILE):
-        raise HTTPException(status_code=404, detail="Configuration store not found")
+        # Update existing or append new
+        updated = False
+        for idx, s in enumerate(sites):
+            if s.get("id") == site_id or s.get("match_domain") == site_data.get("match_domain"):
+                sites[idx] = site_data
+                updated = True
+                break
 
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        if not updated:
+            sites.append(site_data)
 
-    initial_len = len(data["sites"])
-    data["sites"] = [item for item in data["sites"] if item["id"] != site_id]
+        data["sites"] = sites
+        return self.save_configs(data)
 
-    if len(data["sites"]) == initial_len:
-        raise HTTPException(status_code=404, detail="Configuration profile ID not found")
+    def delete_site(self, site_id: str) -> bool:
+        """Removes a site profile by ID."""
+        data = self.load_configs()
+        sites = data.get("sites", [])
+        data["sites"] = [s for s in sites if s.get("id") != site_id]
+        return self.save_configs(data)
 
-    _write_config_raw(data)
-    return {"status": "success", "message": f"Deleted configuration profile: {site_id}"}
+    def match_url(self, target_url: str) -> dict:
+        """Matches a target URL against configured site domains."""
+        domain = urlparse(target_url).netloc.lower()
+        # Strip subdomains (e.g., s6.bigcdn.cc -> bigcdn.cc, www.fullhdporn.net -> fullhdporn.net)
+        sites = self.get_all_sites()
+
+        for s in sites:
+            match_d = s.get("match_domain", "").lower()
+            if match_d and (match_d in domain or domain.endswith(match_d)):
+                return s
+
+        return {
+            "id": "default",
+            "name": "Default / Direct Fallback",
+            "match_domain": domain,
+            "engine_mode": "bigcdn"
+        }
