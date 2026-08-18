@@ -8,6 +8,7 @@ from playwright.sync_api import sync_playwright
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 def upgrade_to_highest_quality(stream_url: str, referer: str, cookie_header: str, quality_variants: list) -> str:
+    """Substitutes tokenized resolution markers (-360.mp4) with higher resolutions and verifies via HEAD."""
     for target_q in quality_variants:
         candidate_url = re.sub(r'([-_/])(360|480|720|1080|1440|2160)(\.mp4|p\.mp4|\?)', rf'\g<1>{target_q}\g<3>', stream_url)
         if candidate_url == stream_url and target_q in stream_url:
@@ -38,7 +39,7 @@ def run(target_url: str, cfg: dict, output_filename: str, download_dir: str):
     def process_url(url: str):
         if not url:
             return
-        if any(kw.lower() in url.lower() for kw in sniff_keywords) and not "tile.vtt" in url:
+        if any(kw.lower() in url.lower() for kw in sniff_keywords) and "tile.vtt" not in url:
             if url not in sniffed_media_urls:
                 sniffed_media_urls.add(url)
                 print(f"[+] Captured Token/Stream: {url}", flush=True)
@@ -89,6 +90,8 @@ def run(target_url: str, cfg: dict, output_filename: str, download_dir: str):
         page.on("request", lambda req: process_url(req.url))
         page.on("response", lambda res: process_url(res.url))
 
+        context.on("page", lambda p_extra: p_extra.close() if p_extra != page else None)
+
         try:
             page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(2000)
@@ -136,11 +139,11 @@ def run(target_url: str, cfg: dict, output_filename: str, download_dir: str):
     print("[*] Probing for highest quality stream variant...", flush=True)
     target_stream_url = upgrade_to_highest_quality(selected_url, referer, cookie_header_val, quality_variants)
 
-    print("=" * 65, flush=True)
+    print("=" * 60, flush=True)
     print(f"[✓] RESOLVED STREAM : {target_stream_url}", flush=True)
     print(f"[✓] COOKIES ATTACHED: {len(session_cookies)} items", flush=True)
     print(f"[✓] SAVING TO       : {download_dir}/{output_filename}", flush=True)
-    print("=" * 65, flush=True)
+    print("=" * 60, flush=True)
 
     aria2_cmd = [
         "aria2c",

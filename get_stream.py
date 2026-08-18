@@ -15,7 +15,7 @@ target_url = sys.argv[1]
 download_dir = os.path.expanduser("~/downloads")
 os.makedirs(download_dir, exist_ok=True)
 
-# 1. Match Site Profile from Config Core
+# 1. Match site profile
 engine_matcher = ConfigEngine()
 cfg = engine_matcher.match_url(target_url)
 
@@ -30,7 +30,7 @@ print(f"[*] Engine Mode     : {engine_mode.upper()}", flush=True)
 print(f"[*] Target URL      : {target_url}", flush=True)
 print("=" * 65, flush=True)
 
-# 2. Derive Filename from URL Pattern or Slug
+# 2. Derive filename
 def resolve_filename(url: str) -> str:
     if title_mode == "page_url" and title_pattern:
         match = re.search(title_pattern, url)
@@ -48,11 +48,10 @@ def resolve_filename(url: str) -> str:
 
 output_filename = resolve_filename(target_url)
 
-# 3. Route Execution to the Designated Engine
+# 3. Route execution
 if engine_mode == "tamperdev":
     success = engine_tamperdev.run(target_url, cfg, output_filename, download_dir)
 else:
-    # Handles "direct_cdn", "standard", or fallback
     success = engine_direct_cdn.run(target_url, cfg, output_filename, download_dir)
 
 if not success:

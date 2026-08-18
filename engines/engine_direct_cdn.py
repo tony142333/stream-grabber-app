@@ -6,36 +6,49 @@ from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-IGNORED_PATTERNS = ["amplifo.com", "storagexhd.com", "creative", "trailer", "preview.mp4", "tile.vtt", "main.jpg"]
 
-def get_content_length(url: str, referer: str, cookie_header: str) -> int:
-    req = urllib.request.Request(
-        url,
-        headers={"Referer": referer, "Cookie": cookie_header, "User-Agent": USER_AGENT},
-        method="HEAD"
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            return int(resp.headers.get("Content-Length", 0))
-    except Exception:
-        return 0
+def probe_highest_quality(base_url: str, referer: str, quality_variants: list) -> str:
+    """Probes HEAD requests for highest available quality on the CDN path."""
+    for q in quality_variants:
+        test_url = f"{base_url}/{q}.mp4"
+        req = urllib.request.Request(
+            test_url,
+            headers={
+                "Referer": referer,
+                "User-Agent": USER_AGENT
+            },
+            method="HEAD"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                if resp.status == 200:
+                    print(f"[+] Verified available quality: {q}p -> {test_url}", flush=True)
+                    return test_url
+        except Exception:
+            continue
+    return f"{base_url}/1080.mp4"
 
 def run(target_url: str, cfg: dict, output_filename: str, download_dir: str):
-    sniff_keywords = cfg.get("sniff_keywords", [".mp4", ".m3u8"])
+    sniff_keywords = cfg.get("sniff_keywords", ["bigcdn.cc", ".mp4", ".m3u8"])
+    quality_variants = cfg.get("quality_preference", ["2160", "4k", "1440", "1080", "720", "480", "360"])
     click_selectors = cfg.get("click_selectors", [".fluid_initial_play_button", "video", ".play", "button", "#player"])
 
     sniffed_media_urls = set()
-    session_cookies = []
+    base_cdn_paths = set()
 
     def process_url(url: str):
         if not url:
             return
-        if any(kw.lower() in url.lower() for kw in sniff_keywords) and not any(bad in url.lower() for bad in IGNORED_PATTERNS):
-            if url not in sniffed_media_urls:
-                sniffed_media_urls.add(url)
-                print(f"[+] Sniffed Stream URL: {url}", flush=True)
+        if any(kw.lower() in url.lower() for kw in sniff_keywords):
+            if any(q in url for q in quality_variants) or url.endswith(".mp4") or ".m3u8" in url:
+                if url not in sniffed_media_urls:
+                    sniffed_media_urls.add(url)
+                    print(f"[+] Sniffed Stream URL: {url}", flush=True)
+            elif "tile.vtt" in url or "main.jpg" in url or "preview.mp4" in url:
+                base = url.rsplit("/", 1)[0]
+                base_cdn_paths.add(base)
 
-    print("[*] Launching Direct CDN / Size-Verified Engine...", flush=True)
+    print("[*] Launching Direct CDN / Hierarchy Prober Engine...", flush=True)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -61,63 +74,73 @@ def run(target_url: str, cfg: dict, output_filename: str, download_dir: str):
         page.on("request", lambda req: process_url(req.url))
         page.on("response", lambda res: process_url(res.url))
 
+        # Auto-close popups
+        context.on("page", lambda p_extra: p_extra.close() if p_extra != page else None)
+
         try:
-            page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+            page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(2000)
 
             selector_array_js = str(click_selectors)
-            click_script = f"""() => {{
-                document.querySelectorAll('video').forEach(v => {{
-                    try {{ v.muted = true; v.play(); }} catch(e){{}}
-                }});
+            interaction_script = f"""() => {{
+                document.querySelectorAll('video').forEach(v => {{ v.muted = true; try {{ v.play(); }} catch(e){{}} }});
                 const selectors = {selector_array_js};
                 selectors.forEach(sel => {{
-                    document.querySelectorAll(sel).forEach(el => {{
-                        try {{ el.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }})); }} catch(e){{}}
-                    }});
+                    document.querySelectorAll(sel).forEach(b => {{ try {{ b.click(); }} catch(e){{}} }});
                 }});
             }}"""
 
             for _ in range(12):
+                if sniffed_media_urls or base_cdn_paths:
+                    break
                 for frame in page.frames:
                     try:
-                        frame.evaluate(click_script)
+                        frame.evaluate(interaction_script)
                     except Exception:
                         pass
                 page.wait_for_timeout(1000)
 
-            session_cookies = context.cookies()
         except Exception as e:
             print(f"[-] Navigation notice: {e}", flush=True)
         finally:
             browser.close()
 
-    if not sniffed_media_urls:
-        print("[-] Error: No media stream detected.", flush=True)
+    target_stream_url = None
+    primary_cdn_base = None
+
+    if sniffed_media_urls:
+        for q in quality_variants:
+            matched = [u for u in sniffed_media_urls if f"/{q}.mp4" in u or f"_{q}p" in u]
+            if matched:
+                target_stream_url = matched[0]
+                primary_cdn_base = target_stream_url.rsplit("/", 1)[0]
+                break
+
+        if not primary_cdn_base and sniffed_media_urls:
+            target_stream_url = list(sniffed_media_urls)[0]
+            primary_cdn_base = target_stream_url.rsplit("/", 1)[0]
+    elif base_cdn_paths:
+        primary_cdn_base = list(base_cdn_paths)[0]
+
+    if not primary_cdn_base and not target_stream_url:
+        print("[-] Error: No matching stream or CDN path detected.", flush=True)
         return False
 
+    # Derive Referer
     referer_match = re.match(r'(https?://[^/]+)/?', target_url)
-    referer = referer_match.group(0) if referer_match else target_url
-    cookie_header_val = "; ".join([f"{c['name']}={c['value']}" for c in session_cookies])
+    referer = referer_match.group(0) if referer_match else "https://google.com/"
 
-    print("[*] Probing candidate streams for largest video payload...", flush=True)
-    best_stream_url = None
-    max_bytes = 0
+    if primary_cdn_base and target_stream_url and not target_stream_url.endswith(".m3u8"):
+        print("[*] Probing CDN path for highest resolution hierarchy...", flush=True)
+        target_stream_url = probe_highest_quality(primary_cdn_base, referer, quality_variants)
+    elif not target_stream_url and primary_cdn_base:
+        target_stream_url = probe_highest_quality(primary_cdn_base, referer, quality_variants)
 
-    for u in sniffed_media_urls:
-        size = get_content_length(u, referer, cookie_header_val)
-        print(f"    -> {u[:70]}... ({size / (1024*1024):.2f} MB)", flush=True)
-        if size > max_bytes:
-            max_bytes = size
-            best_stream_url = u
-
-    target_stream_url = best_stream_url if best_stream_url else list(sniffed_media_urls)[0]
-
-    print("=" * 65, flush=True)
-    print(f"[✓] RESOLVED STREAM : {target_stream_url}", flush=True)
-    print(f"[✓] VERIFIED SIZE   : {max_bytes / (1024*1024):.2f} MB", flush=True)
-    print(f"[✓] SAVING TO       : {download_dir}/{output_filename}", flush=True)
-    print("=" * 65, flush=True)
+    print("=" * 60, flush=True)
+    print(f"[✓] TARGET STREAM RESOLVED: {target_stream_url}", flush=True)
+    print(f"[✓] REFERER              : {referer}", flush=True)
+    print(f"[✓] SAVING TO            : {download_dir}/{output_filename}", flush=True)
+    print("=" * 60, flush=True)
 
     aria2_cmd = [
         "aria2c",
@@ -128,11 +151,9 @@ def run(target_url: str, cfg: dict, output_filename: str, download_dir: str):
         f"--header=Referer: {referer}",
         f"--user-agent={USER_AGENT}",
         f"--dir={download_dir}",
-        "-o", output_filename
+        "-o", output_filename,
+        target_stream_url
     ]
-    if cookie_header_val:
-        aria2_cmd.append(f"--header=Cookie: {cookie_header_val}")
-    aria2_cmd.append(target_stream_url)
 
     proc = subprocess.Popen(aria2_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     for line in iter(proc.stdout.readline, ''):
