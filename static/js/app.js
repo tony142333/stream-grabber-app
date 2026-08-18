@@ -101,7 +101,12 @@ function renderConfigGrid() {
           <h4 style="color:#fff; font-size: 0.95rem;">${c.name}</h4>
           <span style="font-size:0.75rem; color:var(--accent); font-family:var(--font-mono);">${c.match_domain}</span>
         </div>
-        <span class="badge badge-sniffing" style="text-transform:none;">${c.title_mode === 'html_tag' ? 'HTML Selector' : 'URL Regex'}</span>
+        <div style="display: flex; gap: 6px;">
+          <span class="badge ${c.engine_mode === 'tamperdev' ? 'badge-failed' : 'badge-downloading'}" style="text-transform:none;">
+            ${c.engine_mode === 'tamperdev' ? 'TamperDev Mode' : 'Standard'}
+          </span>
+          <span class="badge badge-sniffing" style="text-transform:none;">${c.title_mode === 'html_tag' ? 'HTML Selector' : 'URL Regex'}</span>
+        </div>
       </div>
 
       <div style="font-size: 0.78rem; color: var(--text-muted); font-family: var(--font-mono); background: var(--bg-input); padding: 8px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
@@ -141,6 +146,7 @@ function openConfigModal() {
   document.getElementById('cfgName').value = "";
   document.getElementById('cfgDomain').value = "";
   document.getElementById('cfgExample').value = "";
+  document.getElementById('cfgEngineMode').value = "standard";
   document.getElementById('cfgTitleMode').value = "page_url";
   document.getElementById('cfgTitlePattern').value = "";
   document.getElementById('cfgKeywords').value = ".mp4, .m3u8";
@@ -161,6 +167,7 @@ function editConfigPreset(id) {
   document.getElementById('cfgName').value = c.name || "";
   document.getElementById('cfgDomain').value = c.match_domain || "";
   document.getElementById('cfgExample').value = c.example_url || "";
+  document.getElementById('cfgEngineMode').value = c.engine_mode || "standard";
   document.getElementById('cfgTitleMode').value = c.title_mode || "page_url";
   document.getElementById('cfgTitlePattern').value = c.title_pattern || "";
   document.getElementById('cfgKeywords').value = (c.sniff_keywords || []).join(", ");
@@ -181,6 +188,7 @@ async function submitConfigPreset() {
     name: document.getElementById('cfgName').value.trim(),
     match_domain: document.getElementById('cfgDomain').value.trim(),
     example_url: document.getElementById('cfgExample').value.trim(),
+    engine_mode: document.getElementById('cfgEngineMode').value,
     title_mode: document.getElementById('cfgTitleMode').value,
     title_pattern: document.getElementById('cfgTitlePattern').value.trim(),
     sniff_keywords: document.getElementById('cfgKeywords').value.split(',').map(s => s.trim()).filter(Boolean),

@@ -5,6 +5,7 @@
       "name": "BigCDN Network",
       "match_domain": "bigcdn.cc",
       "example_url": "https://s6.bigcdn.cc/watch/video-slug.html",
+      "engine_mode": "standard",
       "sniff_keywords": ["bigcdn.cc", ".mp4"],
       "title_mode": "page_url",
       "title_pattern": "",
@@ -16,6 +17,7 @@
       "name": "Example Video Site",
       "match_domain": "example.com",
       "example_url": "https://example.com/videos/awesome-clip",
+      "engine_mode": "tamperdev",
       "sniff_keywords": ["stream", "master.m3u8", ".mp4"],
       "title_mode": "html_tag",
       "title_pattern": "h1.video-title",
@@ -24,6 +26,3 @@
     }
   ]
 }
-
-
-

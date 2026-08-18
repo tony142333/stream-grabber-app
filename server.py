@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
-# --- Config Engine Router Hook ---
+# Config Engine Router Hook
 from modules.config_manager.config_core import config_router, CONFIG_DIR
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

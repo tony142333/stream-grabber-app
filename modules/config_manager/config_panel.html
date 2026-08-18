@@ -22,9 +22,18 @@
         </div>
     </div>
 
-    <div>
-        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Example Target Page URL</label>
-        <input type="text" id="cfgExample" placeholder="e.g., https://s6.bigcdn.cc/watch/video-slug.html" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none; font-family:var(--font-mono); font-size:0.8rem;" />
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <div>
+            <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Example Target Page URL</label>
+            <input type="text" id="cfgExample" placeholder="https://example.com/watch/video.html" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none; font-family:var(--font-mono); font-size:0.8rem;" />
+        </div>
+        <div>
+            <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Sniffing Engine Mode</label>
+            <select id="cfgEngineMode" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none;">
+                <option value="standard">Standard Browser Request Lifecycle</option>
+                <option value="tamperdev">CDP Protocol Interceptor (TamperDev Mode)</option>
+            </select>
+        </div>
     </div>
 
     <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 1rem;">
@@ -42,17 +51,17 @@
     </div>
 
     <div>
-        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Sniff Matching Keywords (Comma separated values)</label>
+        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Sniff Matching Keywords (Comma separated)</label>
         <input type="text" id="cfgKeywords" placeholder="e.g., bigcdn.cc, .mp4, master.m3u8" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none; font-family:var(--font-mono); font-size:0.8rem;" />
     </div>
 
     <div>
-        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Auto Click Selectors (Comma separated DOM chain layout)</label>
+        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Auto Click Selectors (Comma separated)</label>
         <input type="text" id="cfgClicks" placeholder="e.g., .fluid_initial_play_button, button.play, #player" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none; font-family:var(--font-mono); font-size:0.8rem;" />
     </div>
 
     <div>
-        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Preferred Quality Hierarchy (Space/Comma separated hierarchy ranking order)</label>
+        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:4px;">Preferred Quality Hierarchy (Comma separated)</label>
         <input type="text" id="cfgQualities" placeholder="e.g., 2160, 1080, 720, 480" style="width:100%; background:var(--bg-input); border:1px solid var(--border); padding:8px 12px; color:#fff; border-radius:6px; outline:none; font-family:var(--font-mono); font-size:0.8rem;" />
     </div>
 
@@ -62,7 +71,4 @@
     </div>
 </div>
 
-<div id="configPresetsGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1rem;">
-</div>
-
-
+<div id="configPresetsGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1rem;"></div>

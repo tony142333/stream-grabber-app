@@ -14,12 +14,12 @@ if len(sys.argv) < 2:
 
 target_url = sys.argv[1]
 
-# Initialize Config Matcher
+# Initialize Config Matcher Engine
 engine = ConfigEngine()
 cfg = engine.match_url(target_url)
 print(f"[+] Matched site profile: {cfg.get('name', 'Default')}", flush=True)
 
-# Extraction settings from config
+# Extraction settings from config profile arrays
 sniff_keywords = cfg.get("sniff_keywords", [".mp4", ".m3u8"])
 quality_variants = cfg.get("quality_preference", ["2160", "4k", "1440", "1080", "720", "480", "360"])
 click_selectors = cfg.get("click_selectors", ["video", "button"])
@@ -61,6 +61,19 @@ def probe_highest_quality(base_url: str, referer: str) -> str:
             continue
     return f"{base_url}/1080.mp4"
 
+def process_url(url: str):
+    if not url:
+        return
+
+    if any(kw.lower() in url.lower() for kw in sniff_keywords):
+        if any(q in url for q in quality_variants) or url.endswith(".mp4") or ".m3u8" in url or "manifest" in url:
+            if url not in sniffed_media_urls:
+                sniffed_media_urls.add(url)
+                print(f"[+] Sniffed Stream URL: {url}", flush=True)
+        elif "tile.vtt" in url or "main.jpg" in url or "preview.mp4" in url:
+            base = url.rsplit("/", 1)[0]
+            base_cdn_paths.add(base)
+
 print(f"[*] Navigating to: {target_url}", flush=True)
 
 with sync_playwright() as p:
@@ -70,34 +83,59 @@ with sync_playwright() as p:
             "--no-sandbox",
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
-            "--disable-gpu"
+            "--disable-gpu",
+            "--disable-web-security",
+            "--allow-running-insecure-content"
         ]
     )
-    page = browser.new_page(
+
+    context = browser.new_context(
         viewport={"width": 1920, "height": 1080},
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        permissions=["autoplay"],
+        ignore_https_errors=True
     )
 
-    def process_url(url: str):
-        if not url:
-            return
+    page = context.new_page()
 
-        # Check against dynamic sniff keywords
-        if any(kw.lower() in url.lower() for kw in sniff_keywords):
-            if any(q in url for q in quality_variants) or url.endswith(".mp4") or ".m3u8" in url:
-                sniffed_media_urls.add(url)
-                print(f"[+] Sniffed Stream URL: {url}", flush=True)
-            elif "tile.vtt" in url or "main.jpg" in url or "preview.mp4" in url:
-                base = url.rsplit("/", 1)[0]
-                base_cdn_paths.add(base)
+    # Dynamic Engine Mode Evaluation
+    engine_mode = cfg.get("engine_mode", "standard")
+
+    if engine_mode == "tamperdev":
+        print("[*] Activating CDP Protocol Interceptor (TamperDev Emulation Core)...", flush=True)
+        page.add_init_script("""
+            const _fetch = window.fetch;
+            window.fetch = async function(...args) {
+                const url = args[0] ? (typeof args[0] === 'string' ? args[0] : args[0].url) : '';
+                if (url) console.log('__TAMPERDEV_URL__:' + url);
+                return _fetch.apply(this, args);
+            };
+
+            const _open = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                if (url) console.log('__TAMPERDEV_URL__:' + url);
+                return _open.apply(this, arguments);
+            };
+        """)
+
+        page.on("console", lambda msg: process_url(msg.text.replace("__TAMPERDEV_URL__:", "")) if "__TAMPERDEV_URL__:" in msg.text else None)
+
+        cdp_session = page.context.new_cdp_session(page)
+        cdp_session.send("Network.enable")
+        cdp_session.on("Network.requestWillBeSent", lambda event: process_url(event.get("request", {}).get("url", "")))
+    else:
+        print("[*] Activating Standard Lifecycle Sniffer...", flush=True)
 
     page.on("request", lambda req: process_url(req.url))
     page.on("response", lambda res: process_url(res.url))
 
+    context.on("page", lambda p: p.close() if p != page else None)
+
     try:
         page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(2000)
 
-        # Attempt HTML Tag title extraction if configured
+        # Extract Title
         if title_mode == "html_tag" and title_pattern:
             try:
                 el = page.query_selector(title_pattern)
@@ -106,17 +144,23 @@ with sync_playwright() as p:
             except Exception:
                 pass
 
-        # Build dynamic click evaluation script
+        # Interaction & Click Loop
         selector_array_js = str(click_selectors)
         interaction_script = f"""() => {{
-            document.querySelectorAll('video').forEach(v => {{ v.muted = true; try {{ v.play(); }} catch(e){{}} }});
+            document.querySelectorAll('video').forEach(v => {{
+                try {{ v.muted = true; v.play(); }} catch(e){{}}
+            }});
             const selectors = {selector_array_js};
             selectors.forEach(sel => {{
-                document.querySelectorAll(sel).forEach(b => {{ try {{ b.click(); }} catch(e){{}} }});
+                document.querySelectorAll(sel).forEach(b => {{
+                    try {{
+                        b.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }}));
+                    }} catch(e){{}}
+                }});
             }});
         }}"""
 
-        for _ in range(12):
+        for _ in range(15):
             if sniffed_media_urls or base_cdn_paths:
                 break
             for frame in page.frames:
@@ -131,7 +175,7 @@ with sync_playwright() as p:
     finally:
         browser.close()
 
-# Determine File Base Name
+# Resolve Final Target & File Name
 base_name = None
 if title_mode == "html_tag" and extracted_html_title:
     base_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', extracted_html_title).strip("._")
@@ -146,32 +190,34 @@ if not base_name:
 
 output_file = f"{base_name}.mp4"
 
-# Determine Stream URL
 target_stream_url = None
 primary_cdn_base = None
 
 if sniffed_media_urls:
     for q in quality_variants:
-        matched = [u for u in sniffed_media_urls if f"/{q}.mp4" in u or f"_{q}p" in u]
+        matched = [u for u in sniffed_media_urls if f"/{q}.mp4" in u or f"_{q}p" in u or f"/{q}/" in u]
         if matched:
             target_stream_url = matched[0]
             primary_cdn_base = target_stream_url.rsplit("/", 1)[0]
             break
-    if not primary_cdn_base and sniffed_media_urls:
+
+    if not target_stream_url and sniffed_media_urls:
         target_stream_url = list(sniffed_media_urls)[0]
         primary_cdn_base = target_stream_url.rsplit("/", 1)[0]
 elif base_cdn_paths:
     primary_cdn_base = list(base_cdn_paths)[0]
 
-if not primary_cdn_base and not target_stream_url:
+if not target_stream_url and primary_cdn_base:
+    target_stream_url = f"{primary_cdn_base}/1080.mp4"
+
+if not target_stream_url:
     print("[-] Error: No matching stream or CDN path detected.", flush=True)
     sys.exit(1)
 
-# Dynamic referer resolution
 referer_match = re.match(r'(https?://[^/]+)/?', target_url)
 referer = referer_match.group(0) if referer_match else "https://google.com/"
 
-if primary_cdn_base and not target_stream_url.endswith(".m3u8"):
+if primary_cdn_base and not target_stream_url.endswith(".m3u8") and "index" not in target_stream_url:
     print(f"[*] Probing CDN path for highest resolution hierarchy...", flush=True)
     target_stream_url = probe_highest_quality(primary_cdn_base, referer)
 

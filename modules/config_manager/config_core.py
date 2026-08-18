@@ -9,15 +9,15 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "sites_config.json")
 
 config_router = APIRouter()
 
-# --- Pydantic Data Validation Models ---
 class SiteConfigModel(BaseModel):
     id: str = Field(..., description="Unique alphanumeric URL slug ID")
     name: str
     match_domain: str
     example_url: str
+    engine_mode: str = "standard"  # 'standard' or 'tamperdev'
     sniff_keywords: list[str] = []
-    title_mode: str = "page_url"  # 'page_url' or 'html_tag'
-    title_pattern: str = ""       # Regex for page_url, CSS selector for html_tag
+    title_mode: str = "page_url"   # 'page_url' or 'html_tag'
+    title_pattern: str = ""
     quality_preference: list[str] = ["1080", "720", "480"]
     click_selectors: list[str] = []
 
@@ -25,7 +25,6 @@ class ConfigListResponse(BaseModel):
     sites: list[SiteConfigModel]
 
 
-# --- Core Matching Engine Engine Class ---
 class ConfigEngine:
     def __init__(self):
         self.config_path = CONFIG_FILE
@@ -34,6 +33,7 @@ class ConfigEngine:
             "name": "Global Fallback Handler",
             "match_domain": "*",
             "example_url": "",
+            "engine_mode": "standard",
             "sniff_keywords": [".mp4", ".m3u8", "video", "stream"],
             "title_mode": "page_url",
             "title_pattern": "",
@@ -51,7 +51,6 @@ class ConfigEngine:
             return {"sites": []}
 
     def match_url(self, url: str) -> dict:
-        """Evaluates domain mappings to return custom configurations or falls back securely."""
         data = self._load_raw()
         for site in data.get("sites", []):
             domain = site.get("match_domain", "").strip().lower()
@@ -60,7 +59,6 @@ class ConfigEngine:
         return self.default_config
 
 
-# --- FastAPI Integration Router API Handlers ---
 def _write_config_raw(data: dict):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
@@ -82,7 +80,6 @@ def save_or_update_config(site: SiteConfigModel):
         except Exception:
             pass
 
-    # Clean up duplicate profiles if updating matching IDs
     existing_index = next((i for i, item in enumerate(data["sites"]) if item["id"] == site.id), None)
 
     if existing_index is not None:
