@@ -13,16 +13,16 @@
       "click_selectors": [".fluid_initial_play_button", ".play", "button", "#player"]
     },
     {
-      "id": "generic_example",
-      "name": "Example Video Site",
-      "match_domain": "example.com",
-      "example_url": "https://example.com/videos/awesome-clip",
+      "id": "fullhdporn",
+      "name": "FullHDPorn",
+      "match_domain": "fullhdporn.net",
+      "example_url": "https://www.fullhdporn.net/we-re-the-taylors-part-3-family-mayhem_v1/",
       "engine_mode": "tamperdev",
-      "sniff_keywords": ["stream", "master.m3u8", ".mp4"],
+      "sniff_keywords": ["master.m3u8", "index.m3u8", ".mp4", "playlist.m3u8"],
       "title_mode": "html_tag",
-      "title_pattern": "h1.video-title",
-      "quality_preference": ["1080", "720", "480"],
-      "click_selectors": [".play-btn", "video"]
+      "title_pattern": "h1",
+      "quality_preference": ["1080", "720", "480", "360"],
+      "click_selectors": ["video", ".fp-player", ".play-button", "button"]
     }
   ]
 }
