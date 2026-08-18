@@ -2,14 +2,14 @@ import os
 import re
 import subprocess
 import urllib.request
-from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+QUALITY_VARIANTS = ["2160", "4k", "1440", "1080", "720", "480", "360"]
 
-def upgrade_to_highest_quality(stream_url: str, referer: str, cookie_header: str, quality_variants: list) -> str:
-    """Substitutes tokenized resolution markers (-360.mp4) with higher resolutions and verifies via HEAD."""
-    for target_q in quality_variants:
+def upgrade_to_highest_quality(stream_url: str, referer: str, cookie_header: str) -> str:
+    """Substitutes lower quality tokens (-360.mp4) with 1080p and verifies via HEAD request."""
+    for target_q in QUALITY_VARIANTS:
         candidate_url = re.sub(r'([-_/])(360|480|720|1080|1440|2160)(\.mp4|p\.mp4|\?)', rf'\g<1>{target_q}\g<3>', stream_url)
         if candidate_url == stream_url and target_q in stream_url:
             return stream_url
@@ -28,18 +28,14 @@ def upgrade_to_highest_quality(stream_url: str, referer: str, cookie_header: str
             continue
     return stream_url
 
-def run(target_url: str, cfg: dict, output_filename: str, download_dir: str):
-    sniff_keywords = cfg.get("sniff_keywords", ["get_stream", ".mp4", "master.m3u8"])
-    quality_variants = cfg.get("quality_preference", ["2160", "4k", "1440", "1080", "720", "480", "360"])
-    click_selectors = cfg.get("click_selectors", ["video", ".fp-player", ".play-button", "button", "[class*='play']"])
-
+def run(target_url: str, output_file: str, download_dir: str):
     sniffed_media_urls = set()
     session_cookies = []
 
     def process_url(url: str):
         if not url:
             return
-        if any(kw.lower() in url.lower() for kw in sniff_keywords) and "tile.vtt" not in url:
+        if "get_stream" in url or ((".mp4" in url or ".m3u8" in url) and "tile.vtt" not in url):
             if url not in sniffed_media_urls:
                 sniffed_media_urls.add(url)
                 print(f"[+] Captured Token/Stream: {url}", flush=True)
@@ -96,18 +92,14 @@ def run(target_url: str, cfg: dict, output_filename: str, download_dir: str):
             page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(2000)
 
-            selector_array_js = str(click_selectors)
-            click_script = f"""() => {{
-                document.querySelectorAll('video').forEach(v => {{
-                    try {{ v.muted = true; v.play(); }} catch(e){{}}
-                }});
-                const selectors = {selector_array_js};
-                selectors.forEach(sel => {{
-                    document.querySelectorAll(sel).forEach(btn => {{
-                        try {{ btn.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }})); }} catch(e){{}}
-                    }});
-                }});
-            }}"""
+            click_script = """() => {
+                document.querySelectorAll('video').forEach(v => {
+                    try { v.muted = true; v.play(); } catch(e){}
+                });
+                document.querySelectorAll('.fp-player, .play-button, button, video, [class*="play"]').forEach(btn => {
+                    try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e){}
+                });
+            }"""
 
             for _ in range(12):
                 if any("get_stream" in u for u in sniffed_media_urls):
@@ -137,12 +129,12 @@ def run(target_url: str, cfg: dict, output_filename: str, download_dir: str):
     selected_url = get_stream_candidates[0] if get_stream_candidates else list(sniffed_media_urls)[0]
 
     print("[*] Probing for highest quality stream variant...", flush=True)
-    target_stream_url = upgrade_to_highest_quality(selected_url, referer, cookie_header_val, quality_variants)
+    target_stream_url = upgrade_to_highest_quality(selected_url, referer, cookie_header_val)
 
     print("=" * 60, flush=True)
     print(f"[✓] RESOLVED STREAM : {target_stream_url}", flush=True)
     print(f"[✓] COOKIES ATTACHED: {len(session_cookies)} items", flush=True)
-    print(f"[✓] SAVING TO       : {download_dir}/{output_filename}", flush=True)
+    print(f"[✓] SAVING TO       : {download_dir}/{output_file}", flush=True)
     print("=" * 60, flush=True)
 
     aria2_cmd = [
@@ -155,7 +147,7 @@ def run(target_url: str, cfg: dict, output_filename: str, download_dir: str):
         f"--header=Cookie: {cookie_header_val}",
         f"--user-agent={USER_AGENT}",
         f"--dir={download_dir}",
-        "-o", output_filename,
+        "-o", output_file,
         target_stream_url
     ]
 

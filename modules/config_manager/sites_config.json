@@ -4,25 +4,13 @@
       "id": "bigcdn",
       "name": "BigCDN Network",
       "match_domain": "bigcdn.cc",
-      "example_url": "https://s6.bigcdn.cc/watch/video-slug.html",
-      "engine_mode": "direct_cdn",
-      "sniff_keywords": ["bigcdn.cc", ".mp4"],
-      "title_mode": "page_url",
-      "title_pattern": "",
-      "quality_preference": ["2160", "4k", "1440", "1080", "720", "480", "360"],
-      "click_selectors": [".fluid_initial_play_button", ".play", "button", "#player"]
+      "engine_mode": "bigcdn"
     },
     {
       "id": "fullhdporn",
       "name": "FullHDPorn",
       "match_domain": "fullhdporn.net",
-      "example_url": "https://www.fullhdporn.net/we-re-the-taylors-part-3-family-mayhem_v1/",
-      "engine_mode": "tamperdev",
-      "sniff_keywords": ["get_stream", ".mp4", "master.m3u8"],
-      "title_mode": "html_tag",
-      "title_pattern": "h1",
-      "quality_preference": ["1080", "720", "480", "360"],
-      "click_selectors": ["video", ".fp-player", ".play-button", "button", "[class*=\"play\"]"]
+      "engine_mode": "tamperdev"
     }
   ]
 }
