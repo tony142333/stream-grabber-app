@@ -19,10 +19,10 @@ engine = ConfigEngine()
 cfg = engine.match_url(target_url)
 print(f"[+] Matched site profile: {cfg.get('name', 'Default')}", flush=True)
 
-# Extraction settings from config profile arrays
-sniff_keywords = cfg.get("sniff_keywords", [".mp4", ".m3u8"])
+# Extraction settings from config profile
+sniff_keywords = cfg.get("sniff_keywords", [".mp4", ".m3u8", "get_stream"])
 quality_variants = cfg.get("quality_preference", ["2160", "4k", "1440", "1080", "720", "480", "360"])
-click_selectors = cfg.get("click_selectors", ["video", "button"])
+click_selectors = cfg.get("click_selectors", ["video", ".fp-player", "button", "[class*='play']"])
 title_mode = cfg.get("title_mode", "page_url")
 title_pattern = cfg.get("title_pattern", "")
 
@@ -32,6 +32,9 @@ os.makedirs(download_dir, exist_ok=True)
 sniffed_media_urls = set()
 base_cdn_paths = set()
 extracted_html_title = None
+session_cookies = []
+
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 def extract_fallback_name(url: str) -> str:
     parsed_path = urlparse(url).path.strip("/")
@@ -40,37 +43,17 @@ def extract_fallback_name(url: str) -> str:
     name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', name).strip("._")
     return name if name else "downloaded_video"
 
-def probe_highest_quality(base_url: str, referer: str) -> str:
-    """Probes HEAD requests for highest available quality on the stream/CDN path."""
-    for q in quality_variants:
-        test_url = f"{base_url}/{q}.mp4"
-        req = urllib.request.Request(
-            test_url,
-            headers={
-                "Referer": referer,
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            },
-            method="HEAD"
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                if resp.status == 200:
-                    print(f"[+] Verified available stream: {q}p -> {test_url}", flush=True)
-                    return test_url
-        except Exception:
-            continue
-    return f"{base_url}/1080.mp4"
-
 def process_url(url: str):
     if not url:
         return
 
+    # Check if URL hits any defined keywords
     if any(kw.lower() in url.lower() for kw in sniff_keywords):
-        if any(q in url for q in quality_variants) or url.endswith(".mp4") or ".m3u8" in url or "manifest" in url:
+        if any(q in url for q in quality_variants) or ".mp4" in url or ".m3u8" in url or "manifest" in url or "get_stream" in url:
             if url not in sniffed_media_urls:
                 sniffed_media_urls.add(url)
                 print(f"[+] Sniffed Stream URL: {url}", flush=True)
-        elif "tile.vtt" in url or "main.jpg" in url or "preview.mp4" in url:
+        elif "tile.vtt" in url or "main.jpg" in url:
             base = url.rsplit("/", 1)[0]
             base_cdn_paths.add(base)
 
@@ -86,15 +69,14 @@ with sync_playwright() as p:
             "--disable-gpu",
             "--disable-web-security",
             "--allow-running-insecure-content",
-            "--autoplay-policy=no-user-gesture-required"  # <-- Enables autoplay here
+            "--autoplay-policy=no-user-gesture-required"
         ]
     )
 
     context = browser.new_context(
         viewport={"width": 1920, "height": 1080},
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        user_agent=USER_AGENT,
         ignore_https_errors=True
-        # Removed: permissions=["autoplay"]
     )
 
     page = context.new_page()
@@ -162,8 +144,10 @@ with sync_playwright() as p:
         }}"""
 
         for _ in range(15):
-            if sniffed_media_urls or base_cdn_paths:
-                break
+            if sniffed_media_urls:
+                # Break early if a full stream resolution or token is captured
+                if any(any(q in u for q in ["1080", "720", "480", "get_stream"]) for u in sniffed_media_urls):
+                    break
             for frame in page.frames:
                 try:
                     frame.evaluate(interaction_script)
@@ -171,12 +155,15 @@ with sync_playwright() as p:
                     pass
             page.wait_for_timeout(1000)
 
+        # Grab all session cookies before closing browser
+        session_cookies = context.cookies()
+
     except Exception as e:
         print(f"[-] Navigation note: {e}", flush=True)
     finally:
         browser.close()
 
-# Resolve Final Target & File Name
+# Resolve File Name
 base_name = None
 if title_mode == "html_tag" and extracted_html_title:
     base_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', extracted_html_title).strip("._")
@@ -191,42 +178,47 @@ if not base_name:
 
 output_file = f"{base_name}.mp4"
 
-target_stream_url = None
-primary_cdn_base = None
+# Filter & Select Proper Stream (Exclude preview/ad clips)
+ignored_terms = ["preview.mp4", "trailer", "advertisement", "tile.vtt"]
+valid_urls = [u for u in sniffed_media_urls if not any(term in u.lower() for term in ignored_terms)]
 
-if sniffed_media_urls:
+target_stream_url = None
+
+if valid_urls:
+    # 1. Prioritize full signed get_stream tokens matching preferred resolutions
     for q in quality_variants:
-        matched = [u for u in sniffed_media_urls if f"/{q}.mp4" in u or f"_{q}p" in u or f"/{q}/" in u]
+        matched = [u for u in valid_urls if f"-{q}.mp4" in u or f"_{q}p" in u or f"/{q}.mp4" in u or f"/{q}/" in u]
         if matched:
             target_stream_url = matched[0]
-            primary_cdn_base = target_stream_url.rsplit("/", 1)[0]
             break
 
-    if not target_stream_url and sniffed_media_urls:
-        target_stream_url = list(sniffed_media_urls)[0]
-        primary_cdn_base = target_stream_url.rsplit("/", 1)[0]
-elif base_cdn_paths:
-    primary_cdn_base = list(base_cdn_paths)[0]
+    # 2. Match any get_stream link
+    if not target_stream_url:
+        get_stream_links = [u for u in valid_urls if "get_stream" in u]
+        if get_stream_links:
+            target_stream_url = get_stream_links[0]
 
-if not target_stream_url and primary_cdn_base:
-    target_stream_url = f"{primary_cdn_base}/1080.mp4"
+    # 3. Fallback to first valid stream
+    if not target_stream_url:
+        target_stream_url = valid_urls[0]
 
 if not target_stream_url:
-    print("[-] Error: No matching stream or CDN path detected.", flush=True)
+    print("[-] Error: No matching stream URL detected.", flush=True)
     sys.exit(1)
 
+# Format Headers for Aria2c
 referer_match = re.match(r'(https?://[^/]+)/?', target_url)
-referer = referer_match.group(0) if referer_match else "https://google.com/"
-
-if primary_cdn_base and not target_stream_url.endswith(".m3u8") and "index" not in target_stream_url:
-    print(f"[*] Probing CDN path for highest resolution hierarchy...", flush=True)
-    target_stream_url = probe_highest_quality(primary_cdn_base, referer)
+referer = referer_match.group(0) if referer_match else target_url
+cookie_header_val = "; ".join([f"{c['name']}={c['value']}" for c in session_cookies])
 
 print("=" * 60, flush=True)
-print(f"HIGHEST QUALITY DETECTED: {target_stream_url}", flush=True)
-print(f"SAVING TO: {download_dir}/{output_file}", flush=True)
+print(f"TARGET STREAM DETECTED: {target_stream_url}", flush=True)
+print(f"REFERER              : {referer}", flush=True)
+print(f"COOKIES ATTACHED     : {len(session_cookies)} items", flush=True)
+print(f"SAVING TO            : {download_dir}/{output_file}", flush=True)
 print("=" * 60, flush=True)
 
+# Build Aria2c command with matching headers
 aria2_cmd = [
     "aria2c",
     "-x", "16",
@@ -234,7 +226,8 @@ aria2_cmd = [
     "-k", "1M",
     "--summary-interval=1",
     f"--header=Referer: {referer}",
-    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    f"--header=Cookie: {cookie_header_val}",
+    f"--user-agent={USER_AGENT}",
     f"--dir={download_dir}",
     "-o", output_file,
     target_stream_url
