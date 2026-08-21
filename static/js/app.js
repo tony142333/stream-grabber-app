@@ -126,9 +126,11 @@ function renderConfigGrid() {
 }
 
 function toggleTitleModeControls() {
-  const mode = document.getElementById('cfgTitleMode').value;
+  const mode = document.getElementById('cfgTitleMode')?.value;
   const label = document.getElementById('lblTitlePattern');
   const input = document.getElementById('cfgTitlePattern');
+
+  if (!label || !input) return;
 
   if (mode === 'html_tag') {
     label.textContent = 'Target HTML CSS Selector';
@@ -146,7 +148,7 @@ function openConfigModal() {
   document.getElementById('cfgName').value = "";
   document.getElementById('cfgDomain').value = "";
   document.getElementById('cfgExample').value = "";
-  document.getElementById('cfgEngineMode').value = "standard";
+  document.getElementById('cfgEngineMode').value = "bigcdn";
   document.getElementById('cfgTitleMode').value = "page_url";
   document.getElementById('cfgTitlePattern').value = "";
   document.getElementById('cfgKeywords').value = ".mp4, .m3u8";
@@ -167,7 +169,7 @@ function editConfigPreset(id) {
   document.getElementById('cfgName').value = c.name || "";
   document.getElementById('cfgDomain').value = c.match_domain || "";
   document.getElementById('cfgExample').value = c.example_url || "";
-  document.getElementById('cfgEngineMode').value = c.engine_mode || "standard";
+  document.getElementById('cfgEngineMode').value = c.engine_mode || "bigcdn";
   document.getElementById('cfgTitleMode').value = c.title_mode || "page_url";
   document.getElementById('cfgTitlePattern').value = c.title_pattern || "";
   document.getElementById('cfgKeywords').value = (c.sniff_keywords || []).join(", ");
@@ -375,6 +377,9 @@ evtSource.onmessage = function(event) {
 
 async function submitBatch() {
   const input = document.getElementById('targetUrls');
+  const qualitySelect = document.getElementById('selectedQuality');
+  const chosenQuality = qualitySelect ? qualitySelect.value : 'best';
+
   const raw = input.value.trim();
   if (!raw) return;
 
@@ -387,7 +392,10 @@ async function submitBatch() {
   const res = await fetch('/api/run-batch', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ urls })
+    body: JSON.stringify({
+      urls: urls,
+      quality: chosenQuality
+    })
   });
 
   const data = await res.json();

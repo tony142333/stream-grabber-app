@@ -7,6 +7,7 @@ import re
 import uuid
 import sys
 import shutil
+from typing import Optional
 from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -41,6 +42,7 @@ app.include_router(config_router, prefix="/api")
 
 class BatchRunRequest(BaseModel):
     urls: list[str]
+    quality: Optional[str] = "best"
 
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
@@ -51,15 +53,15 @@ def push_log_sync(msg: str):
     if main_loop and log_queue:
         asyncio.run_coroutine_threadsafe(log_queue.put(msg), main_loop)
 
-def stream_process_worker(task_id: str, target_url: str):
+def stream_process_worker(task_id: str, target_url: str, quality: str = "best"):
     python_bin = sys.executable
 
     push_log_sync(f"STATUS:{task_id}:SEARCHING:Initializing Playwright session...")
-    push_log_sync(f"[{task_id}] [*] Starting task for: {target_url}")
+    push_log_sync(f"[{task_id}] [*] Starting task for: {target_url} (Target Quality: {quality})")
 
     master_fd, slave_fd = pty.openpty()
     p = subprocess.Popen(
-        [python_bin, SCRIPT_PATH, target_url],
+        [python_bin, SCRIPT_PATH, target_url, quality],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
@@ -93,12 +95,12 @@ def stream_process_worker(task_id: str, target_url: str):
                         # Map stdout lines to frontend state events
                         if "[*] Navigating to:" in clean_line:
                             push_log_sync(f"STATUS:{task_id}:SEARCHING:Navigating to target page...")
-                        elif "SAVING TO:" in clean_line:
+                        elif "SAVING TO:" in clean_line or "SAVING TO" in clean_line:
                             filename = clean_line.split("/")[-1].strip()
                             push_log_sync(f"FILENAME:{task_id}:{filename}")
-                        elif "[+] Sniffed" in clean_line or "[*] Probing CDN path" in clean_line or "[+] Matched site profile" in clean_line:
-                            push_log_sync(f"STATUS:{task_id}:FOUND:Stream found. Probing highest quality...")
-                        elif "HIGHEST QUALITY DETECTED:" in clean_line:
+                        elif "[+] Sniffed" in clean_line or "[*] Probing" in clean_line or "[+] Matched site profile" in clean_line:
+                            push_log_sync(f"STATUS:{task_id}:FOUND:Stream found. Probing requested quality...")
+                        elif "HIGHEST QUALITY DETECTED:" in clean_line or "SELECTED STREAM URL" in clean_line or "[✓] RESOLVED STREAM" in clean_line:
                             push_log_sync(f"STATUS:{task_id}:DOWNLOADING:Starting download...")
                         elif clean_line.startswith("[#") and ("DL:" in clean_line or "%" in clean_line):
                             push_log_sync(f"PROGRESS:{task_id}:{clean_line}")
@@ -166,10 +168,11 @@ def list_completed_files():
 async def run_batch(req: BatchRunRequest):
     loop = asyncio.get_running_loop()
     created_tasks = []
+    quality = req.quality or "best"
     for raw_url in req.urls:
         t_id = uuid.uuid4().hex[:6]
-        created_tasks.append({"id": t_id, "url": raw_url})
-        loop.run_in_executor(None, stream_process_worker, t_id, raw_url)
+        created_tasks.append({"id": t_id, "url": raw_url, "quality": quality})
+        loop.run_in_executor(None, stream_process_worker, t_id, raw_url, quality)
     return {"status": "queued", "tasks": created_tasks}
 
 @app.get("/api/logs")

@@ -55,9 +55,23 @@
     <div class="view-panel active" id="panel-active">
         <div class="input-card" id="urlInputCard" style="display: none;">
             <textarea id="targetUrls" placeholder="Paste streaming page URLs (one per line)..."></textarea>
-            <div style="display: flex; justify-content: flex-end; gap: 8px;">
-                <button style="background: transparent; color: var(--text-muted); border: 1px solid var(--border); padding: 8px 16px; border-radius: 6px; cursor: pointer;" onclick="toggleInputCard()">Cancel</button>
-                <button class="btn-new-task" onclick="submitBatch()">Start Sniffing & Download</button>
+            <div class="input-actions">
+                <div class="quality-select-group">
+                    <label for="selectedQuality" class="quality-label">Target Quality:</label>
+                    <select id="selectedQuality" class="quality-dropdown">
+                        <option value="best" selected>Best Available (Auto)</option>
+                        <option value="2160">2160p (4K UHD)</option>
+                        <option value="1440">1440p (2K QHD)</option>
+                        <option value="1080">1080p (Full HD)</option>
+                        <option value="720">720p (HD)</option>
+                        <option value="480">480p (SD)</option>
+                        <option value="360">360p (Low)</option>
+                    </select>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <button style="background: transparent; color: var(--text-muted); border: 1px solid var(--border); padding: 8px 16px; border-radius: 6px; cursor: pointer;" onclick="toggleInputCard()">Cancel</button>
+                    <button class="btn-new-task" onclick="submitBatch()">Start Sniffing & Download</button>
+                </div>
             </div>
         </div>
 

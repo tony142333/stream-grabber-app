@@ -2,14 +2,15 @@ import os
 import re
 import subprocess
 import urllib.request
+from typing import Optional
 from playwright.sync_api import sync_playwright
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-QUALITY_VARIANTS = ["2160", "4k", "1440", "1080", "720", "480", "360"]
+DEFAULT_QUALITIES = ["2160", "4k", "1440", "1080", "720", "480", "360"]
 
-def upgrade_to_highest_quality(stream_url: str, referer: str, cookie_header: str) -> str:
-    """Substitutes lower quality tokens (-360.mp4) with 1080p and verifies via HEAD request."""
-    for target_q in QUALITY_VARIANTS:
+def upgrade_quality(stream_url: str, referer: str, cookie_header: str, quality_hierarchy: list) -> str:
+    """Substitutes tokenized quality markers and verifies availability via HEAD request in priority order."""
+    for target_q in quality_hierarchy:
         candidate_url = re.sub(r'([-_/])(360|480|720|1080|1440|2160)(\.mp4|p\.mp4|\?)', rf'\g<1>{target_q}\g<3>', stream_url)
         if candidate_url == stream_url and target_q in stream_url:
             return stream_url
@@ -22,20 +23,35 @@ def upgrade_to_highest_quality(stream_url: str, referer: str, cookie_header: str
         try:
             with urllib.request.urlopen(req, timeout=4) as resp:
                 if resp.status == 200:
-                    print(f"[+] Successfully upgraded stream token to: {target_q}p", flush=True)
+                    print(f"[+] Successfully verified stream token for: {target_q}p", flush=True)
                     return candidate_url
         except Exception:
             continue
     return stream_url
 
-def run(target_url: str, output_file: str, download_dir: str):
+def run(target_url: str, cfg_or_output: any, output_or_dir: str, download_dir_opt: Optional[str] = None):
+    # Support both signatures: run(url, cfg, output_file, download_dir) and run(url, output_file, download_dir)
+    if isinstance(cfg_or_output, dict):
+        cfg = cfg_or_output
+        output_file = output_or_dir
+        download_dir = download_dir_opt or os.path.expanduser("~/downloads")
+    else:
+        cfg = {}
+        output_file = cfg_or_output
+        download_dir = output_or_dir
+
+    quality_hierarchy = cfg.get("quality_preference", DEFAULT_QUALITIES)
+    sniff_keywords = cfg.get("sniff_keywords", ["get_stream", ".mp4", ".m3u8"])
+    click_selectors = cfg.get("click_selectors", [".fp-player", ".play-button", "button", "video", "[class*='play']", "#player"])
+
     sniffed_media_urls = set()
     session_cookies = []
 
     def process_url(url: str):
         if not url:
             return
-        if "get_stream" in url or ((".mp4" in url or ".m3u8" in url) and "tile.vtt" not in url):
+        url_lower = url.lower()
+        if any(kw.lower() in url_lower for kw in sniff_keywords) and "tile.vtt" not in url_lower:
             if url not in sniffed_media_urls:
                 sniffed_media_urls.add(url)
                 print(f"[+] Captured Token/Stream: {url}", flush=True)
@@ -92,17 +108,21 @@ def run(target_url: str, output_file: str, download_dir: str):
             page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(2000)
 
-            click_script = """() => {
-                document.querySelectorAll('video').forEach(v => {
-                    try { v.muted = true; v.play(); } catch(e){}
-                });
-                document.querySelectorAll('.fp-player, .play-button, button, video, [class*="play"]').forEach(btn => {
-                    try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e){}
-                });
-            }"""
+            selector_array_js = str(click_selectors)
+            click_script = f"""() => {{
+                document.querySelectorAll('video').forEach(v => {{
+                    try {{ v.muted = true; v.play(); }} catch(e){{}}
+                }});
+                const selectors = {selector_array_js};
+                selectors.forEach(sel => {{
+                    document.querySelectorAll(sel).forEach(btn => {{
+                        try {{ btn.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }})); }} catch(e){{}}
+                    }});
+                }});
+            }}"""
 
             for _ in range(12):
-                if any("get_stream" in u for u in sniffed_media_urls):
+                if any(any(kw in u.lower() for kw in sniff_keywords) for u in sniffed_media_urls):
                     break
                 for frame in page.frames:
                     try:
@@ -128,8 +148,8 @@ def run(target_url: str, output_file: str, download_dir: str):
     get_stream_candidates = [u for u in sniffed_media_urls if "get_stream" in u]
     selected_url = get_stream_candidates[0] if get_stream_candidates else list(sniffed_media_urls)[0]
 
-    print("[*] Probing for highest quality stream variant...", flush=True)
-    target_stream_url = upgrade_to_highest_quality(selected_url, referer, cookie_header_val)
+    print(f"[*] Probing quality hierarchy: {' -> '.join(quality_hierarchy)}...", flush=True)
+    target_stream_url = upgrade_quality(selected_url, referer, cookie_header_val, quality_hierarchy)
 
     print("=" * 60, flush=True)
     print(f"[✓] RESOLVED STREAM : {target_stream_url}", flush=True)
