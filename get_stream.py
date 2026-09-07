@@ -3,6 +3,10 @@ import os
 import re
 from urllib.parse import urlparse
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 from modules.config_manager.config_core import ConfigEngine
 from engines import engine_bigcdn
 from engines import engine_tamperdev
@@ -12,8 +16,6 @@ if len(sys.argv) < 2:
     sys.exit(1)
 
 target_url = sys.argv[1]
-download_dir = os.path.expanduser("~/downloads")
-os.makedirs(download_dir, exist_ok=True)
 
 # 1. Match Site Profile from Config Core
 engine_matcher = ConfigEngine()
@@ -35,14 +37,16 @@ output_file = f"{base_name}.mp4"
 print("=" * 65, flush=True)
 print(f"[*] Matched Profile : {profile_name}", flush=True)
 print(f"[*] Engine Selected : {engine_mode.upper()}", flush=True)
-print(f"[*] Output Target   : {output_file}", flush=True)
+print(f"[*] Target Filename : {output_file}", flush=True)
 print("=" * 65, flush=True)
 
-# 3. Route Execution
+# 3. Route Execution to PROBE (not run)
 if engine_mode == "tamperdev":
-    success = engine_tamperdev.run(target_url, output_file, download_dir)
+    success = engine_tamperdev.probe(target_url, output_file)
 else:
-    success = engine_bigcdn.run(target_url, output_file, download_dir)
+    success = engine_bigcdn.probe(target_url, output_file)
 
 if not success:
     sys.exit(1)
+
+sys.exit(0)
