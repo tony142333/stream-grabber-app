@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stream Grabber Console</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2338bdf8'%3E%3Cpolygon points='13 2 3 14 12 14 11 22 21 10 12 10 13 2'%3E%3C/polygon%3E%3C/svg%3E">
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -83,7 +84,7 @@
                         <th>File Name</th>
                         <th>Size</th>
                         <th>Finished Date</th>
-                        <th>Destination</th>
+                        <th>Preview</th>
                     </tr>
                     </thead>
                     <tbody id="filesTableBody"></tbody>
@@ -98,6 +99,17 @@
         </div>
     </main>
 </div>
+
+<div id="previewModal" class="preview-modal" onclick="closePreviewModal(event)">
+    <div class="preview-box" onclick="event.stopPropagation()">
+        <div class="preview-box-header">
+            <h3 id="previewTitle" style="font-size: 0.95rem; color: #fff;">Stream Preview (Tunneled via EC2)</h3>
+            <button onclick="closePreviewModal()" style="background: transparent; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer;">✕</button>
+        </div>
+        <video id="previewPlayer" controls autoplay></video>
+    </div>
+</div>
+
 <script src="/static/js/app.js"></script>
 </body>
 </html>

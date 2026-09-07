@@ -25,6 +25,8 @@ function restoreTasksFromStorage() {
     if (!raw) return;
     const stored = JSON.parse(raw);
     for (const [id, data] of Object.entries(stored)) {
+      if (data.status === "COMPLETED") continue;
+
       const task = getOrCreateTask(id, data.name);
       task.status = data.status;
       task.isPaused = data.isPaused;
@@ -43,11 +45,6 @@ function restoreTasksFromStorage() {
       } else if (data.status === "STOPPED") {
         task.badge.className = "badge badge-failed";
         task.badge.textContent = "Stopped";
-        renderTaskActionControls(id, false);
-      } else if (data.status === "COMPLETED") {
-        task.badge.className = "badge badge-completed";
-        task.badge.textContent = "Finished";
-        task.fill.style.width = "100%";
         renderTaskActionControls(id, false);
       } else if (data.status === "FAILED") {
         task.badge.className = "badge badge-failed";
@@ -384,13 +381,13 @@ function removeTaskCard(taskId) {
   const task = tasks[taskId];
   if (!task || !task.element) return;
   task.element.style.opacity = '0';
-  task.element.style.transform = 'translateY(-10px)';
+  task.element.style.transform = 'translateY(-12px) scale(0.98)';
   setTimeout(() => {
     if (task.element.parentNode) task.element.parentNode.removeChild(task.element);
     delete tasks[taskId];
     updateActiveCount();
     saveTasksToStorage();
-  }, 350);
+  }, 400);
 }
 
 function updateActiveCount() {
@@ -523,10 +520,15 @@ evtSource.onmessage = function(event) {
       task.badge.textContent = "Finished";
       task.fill.style.width = "100%";
       task.pct.textContent = "100%";
-      task.speed.textContent = "Saved to ~/downloads";
+      task.speed.textContent = "Saved! Transferring to Downloads...";
       renderTaskActionControls(taskId, false);
+
       updateActiveCount();
       loadCompletedFiles();
+
+      setTimeout(() => {
+        removeTaskCard(taskId);
+      }, 1200);
     } else if (status === "FAILED") {
       task.badge.className = "badge badge-failed";
       task.badge.textContent = "Failed";
