@@ -10,7 +10,7 @@ import shutil
 import signal
 from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -144,7 +144,7 @@ def download_process_worker(task_id: str, stream_url: str, output_file: str, ref
         preexec_fn=os.setsid
     )
     os.close(slave_fd)
-    active_tasks[task_id] = {"process": p, "status": "DOWNLOADING"}
+    active_tasks[task_id] = {"process": p, "status": "DOWNLOADING", "output_file": output_file}
 
     buffer = ""
     while True:
@@ -284,6 +284,75 @@ def stop_task(task_id: str):
         return {"status": "stopping"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+def range_stream_file(file_path: str, range_header: str | None):
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_size = os.path.getsize(file_path)
+    start = 0
+    end = file_size - 1
+
+    if range_header:
+        range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if range_match:
+            start = int(range_match.group(1))
+            if range_match.group(2):
+                end = int(range_match.group(2))
+
+    start = max(0, min(start, file_size - 1))
+    end = max(start, min(end, file_size - 1))
+    content_length = (end - start) + 1
+
+    def iter_file():
+        with open(file_path, "rb") as f:
+            f.seek(start)
+            bytes_left = content_length
+            chunk_size = 1024 * 512
+            while bytes_left > 0:
+                read_amount = min(chunk_size, bytes_left)
+                data = f.read(read_amount)
+                if not data:
+                    break
+                bytes_left -= len(data)
+                yield data
+
+    headers = {
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(content_length),
+        "Content-Type": "video/mp4",
+    }
+    return StreamingResponse(iter_file(), status_code=206 if range_header else 200, headers=headers)
+
+@app.get("/api/preview/active/{task_id}")
+async def preview_active_stream(task_id: str, request: Request):
+    info = active_tasks.get(task_id)
+    target_name = info.get("output_file") if info else None
+
+    target_path = None
+    if target_name:
+        candidate = os.path.join(DOWNLOADS_PATH, target_name)
+        if os.path.exists(candidate):
+            target_path = candidate
+
+    if not target_path:
+        for entry in os.scandir(DOWNLOADS_PATH):
+            if entry.is_file() and not entry.name.endswith(".aria2"):
+                if os.path.exists(f"{entry.path}.aria2"):
+                    target_path = entry.path
+                    break
+
+    if not target_path or os.path.getsize(target_path) < 1024 * 128:
+        raise HTTPException(status_code=425, detail="Buffering initial chunks. Wait a few seconds.")
+
+    return range_stream_file(target_path, request.headers.get("range"))
+
+@app.get("/api/preview/file/{filename}")
+async def preview_completed_stream(filename: str, request: Request):
+    safe_name = os.path.basename(filename)
+    target_path = os.path.join(DOWNLOADS_PATH, safe_name)
+    return range_stream_file(target_path, request.headers.get("range"))
 
 @app.get("/api/logs")
 async def stream_logs():

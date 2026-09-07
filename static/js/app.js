@@ -4,6 +4,63 @@ let configPanelLoaded = false;
 let currentConfigs = [];
 const probedPayloads = {};
 
+function saveTasksToStorage() {
+  const serialized = {};
+  for (const [id, t] of Object.entries(tasks)) {
+    serialized[id] = {
+      name: t.name ? t.name.textContent : '',
+      status: t.status,
+      isPaused: t.isPaused,
+      pct: t.pct ? t.pct.textContent : '0%',
+      speed: t.speed ? t.speed.textContent : '',
+      size: t.size ? t.size.textContent : ''
+    };
+  }
+  localStorage.setItem('sg_tasks', JSON.stringify(serialized));
+}
+
+function restoreTasksFromStorage() {
+  try {
+    const raw = localStorage.getItem('sg_tasks');
+    if (!raw) return;
+    const stored = JSON.parse(raw);
+    for (const [id, data] of Object.entries(stored)) {
+      const task = getOrCreateTask(id, data.name);
+      task.status = data.status;
+      task.isPaused = data.isPaused;
+      if (task.pct) task.pct.textContent = data.pct;
+      if (task.speed) task.speed.textContent = data.speed;
+      if (task.size) task.size.textContent = data.size;
+
+      if (data.status === "DOWNLOADING") {
+        task.badge.className = "badge badge-downloading";
+        task.badge.textContent = "Downloading";
+        renderTaskActionControls(id, true);
+      } else if (data.status === "PAUSED") {
+        task.badge.className = "badge badge-sniffing";
+        task.badge.textContent = "Paused";
+        renderTaskActionControls(id, true);
+      } else if (data.status === "STOPPED") {
+        task.badge.className = "badge badge-failed";
+        task.badge.textContent = "Stopped";
+        renderTaskActionControls(id, false);
+      } else if (data.status === "COMPLETED") {
+        task.badge.className = "badge badge-completed";
+        task.badge.textContent = "Finished";
+        task.fill.style.width = "100%";
+        renderTaskActionControls(id, false);
+      } else if (data.status === "FAILED") {
+        task.badge.className = "badge badge-failed";
+        task.badge.textContent = "Failed";
+        renderTaskActionControls(id, false);
+      }
+    }
+    updateActiveCount();
+  } catch (e) {
+    console.error("Failed to restore tasks", e);
+  }
+}
+
 function switchView(viewName, el) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
@@ -56,12 +113,33 @@ async function loadCompletedFiles() {
         <td style="color: #fff; font-weight: 500;">${f.name}</td>
         <td style="color: var(--accent);">${f.size_mb} MB</td>
         <td style="color: var(--text-muted);">${f.modified}</td>
-        <td style="color: #10b981;">~/downloads</td>
+        <td>
+          <button onclick="openPreview('/api/preview/file/${encodeURIComponent(f.name)}', '${f.name.replace(/'/g, "\\'")}')" style="background: rgba(56, 189, 248, 0.15); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.3); padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; cursor: pointer;">
+            👁 Play
+          </button>
+        </td>
       </tr>
     `).join('');
   } catch(e) {}
 }
 loadCompletedFiles();
+
+function openPreview(url, title) {
+  const modal = document.getElementById('previewModal');
+  const player = document.getElementById('previewPlayer');
+  document.getElementById('previewTitle').textContent = `Preview: ${title}`;
+  player.src = url;
+  modal.style.display = 'flex';
+  player.play().catch(() => {});
+}
+
+function closePreviewModal() {
+  const modal = document.getElementById('previewModal');
+  const player = document.getElementById('previewPlayer');
+  player.pause();
+  player.src = '';
+  modal.style.display = 'none';
+}
 
 async function loadConfigPanel() {
   if (!configPanelLoaded) {
@@ -226,28 +304,33 @@ function getOrCreateTask(taskId, initialName = "Sniffing stream from source...")
   const card = document.createElement('div');
   card.className = 'task-card';
   card.id = `task-${taskId}`;
-  card.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
   card.innerHTML = `
-    <div class="task-header" style="display:flex; justify-content:space-between; align-items:center;">
-      <div class="task-name" id="name-${taskId}" style="word-break: break-all; max-width: 70%;">${initialName}</div>
-      <div style="display: flex; gap: 8px; align-items: center;">
-        <span class="badge badge-sniffing" id="badge-${taskId}">Searching</span>
-        <div id="actions-${taskId}" style="display: none; gap: 6px;"></div>
+    <div class="task-main-body" id="body-${taskId}">
+      <div class="task-header">
+        <div class="task-name" id="name-${taskId}">${initialName}</div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <span class="badge badge-sniffing" id="badge-${taskId}">Searching</span>
+          <div id="actions-${taskId}" style="display: none; gap: 6px;"></div>
+          <button onclick="removeTaskCard('${taskId}')" title="Dismiss Card" style="background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.9rem; padding: 2px 4px;">✕</button>
+        </div>
+      </div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="fill-${taskId}"></div>
+      </div>
+      <div class="task-metrics">
+        <span id="speed-${taskId}">Initializing browser session...</span>
+        <span id="size-${taskId}" style="color: var(--accent); font-family: var(--font-mono);"></span>
+        <span id="pct-${taskId}">0%</span>
       </div>
     </div>
-    <div class="progress-bar-track">
-      <div class="progress-bar-fill" id="fill-${taskId}"></div>
-    </div>
-    <div class="task-metrics" style="display:flex; justify-content:space-between; font-size:0.75rem;">
-      <span id="speed-${taskId}">Initializing browser session...</span>
-      <span id="size-${taskId}" style="color: var(--accent); font-family: var(--font-mono);"></span>
-      <span id="pct-${taskId}">0%</span>
-    </div>
+    <div class="quality-dock" id="dock-${taskId}"></div>
   `;
 
   document.getElementById('activeList').prepend(card);
   tasks[taskId] = {
     element: card,
+    body: card.querySelector(`#body-${taskId}`),
+    dock: card.querySelector(`#dock-${taskId}`),
     name: card.querySelector(`#name-${taskId}`),
     badge: card.querySelector(`#badge-${taskId}`),
     fill: card.querySelector(`#fill-${taskId}`),
@@ -259,6 +342,7 @@ function getOrCreateTask(taskId, initialName = "Sniffing stream from source...")
     isPaused: false
   };
   updateActiveCount();
+  saveTasksToStorage();
   return tasks[taskId];
 }
 
@@ -273,6 +357,9 @@ function renderTaskActionControls(taskId, show = true) {
 
   task.actions.style.display = "flex";
   task.actions.innerHTML = `
+    <button onclick="openPreview('/api/preview/active/${taskId}', '${task.name.textContent.replace(/'/g, "\\'")}')" style="background: rgba(56, 189, 248, 0.15); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.3); padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; cursor: pointer;">
+      👁 Preview
+    </button>
     <button id="btnPause-${taskId}" onclick="togglePauseTask('${taskId}')" style="background: #1e293b; color: #f8fafc; border: 1px solid #334155; padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; cursor: pointer;">
       ${task.isPaused ? "▶ Resume" : "⏸ Pause"}
     </button>
@@ -285,7 +372,6 @@ function renderTaskActionControls(taskId, show = true) {
 async function togglePauseTask(taskId) {
   const task = tasks[taskId];
   if (!task) return;
-
   const endpoint = task.isPaused ? `/api/task/${taskId}/resume` : `/api/task/${taskId}/pause`;
   await fetch(endpoint, { method: 'POST' });
 }
@@ -297,17 +383,14 @@ async function stopTask(taskId) {
 function removeTaskCard(taskId) {
   const task = tasks[taskId];
   if (!task || !task.element) return;
-
   task.element.style.opacity = '0';
   task.element.style.transform = 'translateY(-10px)';
-
   setTimeout(() => {
-    if (task.element.parentNode) {
-      task.element.parentNode.removeChild(task.element);
-    }
+    if (task.element.parentNode) task.element.parentNode.removeChild(task.element);
     delete tasks[taskId];
     updateActiveCount();
-  }, 400);
+    saveTasksToStorage();
+  }, 350);
 }
 
 function updateActiveCount() {
@@ -324,16 +407,12 @@ function updateActiveCount() {
   if (btnStp) btnStp.style.display = hasStopped ? "inline-block" : "none";
 
   const noMsg = document.getElementById('noActiveMsg');
-  if (noMsg) {
-    noMsg.style.display = allTasks.length === 0 ? 'block' : 'none';
-  }
+  if (noMsg) noMsg.style.display = allTasks.length === 0 ? 'block' : 'none';
 }
 
 function clearTasksByStatus(...targetStatuses) {
   Object.keys(tasks).forEach(tId => {
-    if (targetStatuses.includes(tasks[tId].status)) {
-      removeTaskCard(tId);
-    }
+    if (targetStatuses.includes(tasks[tId].status)) removeTaskCard(tId);
   });
 }
 
@@ -353,12 +432,14 @@ function parseAria(str) {
   };
 }
 
-async function triggerSelectedDownload(taskId) {
+async function triggerSelectedQuality(taskId, chosenQuality) {
   const payload = probedPayloads[taskId];
   if (!payload) return;
 
-  const selectEl = document.getElementById(`sel-${taskId}`);
-  const chosenQuality = selectEl ? selectEl.value : (payload.qualities[0] || '1080');
+  const task = getOrCreateTask(taskId);
+
+  task.element.classList.remove('awaiting-quality');
+  task.dock.innerHTML = '';
 
   let streamUrl = payload.base_stream;
   if (streamUrl.includes("{quality}")) {
@@ -367,16 +448,13 @@ async function triggerSelectedDownload(taskId) {
     streamUrl = streamUrl.replace(/([-_/])(360|480|720|1080|1440|2160)(\.mp4|p\.mp4|\?)/, `$1${chosenQuality}$3`);
   }
 
-  const ctrl = document.getElementById(`quality-ctrl-${taskId}`);
-  if (ctrl) ctrl.remove();
-
-  const task = getOrCreateTask(taskId);
   task.status = "DOWNLOADING";
   task.badge.className = "badge badge-downloading";
-  task.badge.textContent = "Downloading";
-  task.speed.textContent = `Starting ${chosenQuality}p download via aria2c...`;
+  task.badge.textContent = `${chosenQuality}p`;
+  task.speed.textContent = `Connecting to ${chosenQuality}p stream via aria2c...`;
 
   renderTaskActionControls(taskId, true);
+  saveTasksToStorage();
 
   await fetch('/api/start-download', {
     method: 'POST',
@@ -420,8 +498,8 @@ evtSource.onmessage = function(event) {
       task.speed.textContent = msg || "Testing resolutions...";
     } else if (status === "AWAITING_SELECTION") {
       task.badge.className = "badge badge-sniffing";
-      task.badge.textContent = "Select Quality";
-      task.speed.textContent = "Choose quality below";
+      task.badge.textContent = "Choose Quality";
+      task.speed.textContent = "Select resolution from the panel";
     } else if (status === "DOWNLOADING") {
       task.isPaused = false;
       task.badge.className = "badge badge-downloading";
@@ -447,7 +525,6 @@ evtSource.onmessage = function(event) {
       task.pct.textContent = "100%";
       task.speed.textContent = "Saved to ~/downloads";
       renderTaskActionControls(taskId, false);
-
       updateActiveCount();
       loadCompletedFiles();
     } else if (status === "FAILED") {
@@ -457,12 +534,14 @@ evtSource.onmessage = function(event) {
       renderTaskActionControls(taskId, false);
       updateActiveCount();
     }
+    saveTasksToStorage();
   } else if (raw.startsWith("FILENAME:")) {
     const parts = raw.split(":");
     const taskId = parts[1];
     const filename = parts.slice(2).join(":");
     const task = getOrCreateTask(taskId);
     task.name.textContent = filename;
+    saveTasksToStorage();
   } else if (raw.startsWith("PROBE_DATA:")) {
     const firstColon = raw.indexOf(":");
     const secondColon = raw.indexOf(":", firstColon + 1);
@@ -476,25 +555,26 @@ evtSource.onmessage = function(event) {
       const task = getOrCreateTask(taskId);
       task.name.textContent = payload.filename || task.name.textContent;
       task.badge.className = "badge badge-sniffing";
-      task.badge.textContent = "Select Quality";
-      task.speed.textContent = "Choose resolution below to proceed";
+      task.badge.textContent = "Pick Quality";
+      task.speed.textContent = "Interception complete. Click your preferred quality on the right.";
 
-      if (!document.getElementById(`quality-ctrl-${taskId}`)) {
-        const container = document.createElement("div");
-        container.id = `quality-ctrl-${taskId}`;
-        container.style = "display: flex; gap: 10px; margin-top: 12px; align-items: center;";
-        container.innerHTML = `
-          <select id="sel-${taskId}" style="background: #1e293b; color: #f8fafc; border: 1px solid #334155; padding: 7px 12px; border-radius: 6px; font-family: monospace; font-size: 0.85rem; outline: none; cursor: pointer;">
-            ${payload.qualities.map((q, idx) => `
-              <option value="${q}" ${idx === 0 ? 'selected' : ''}>
-                ${q}p ${idx === 0 ? '(Highest)' : ''}
-              </option>
-            `).join('')}
-          </select>
-          <button style="background: #3b82f6; color: #fff; border: none; padding: 7px 16px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; cursor: pointer;" onclick="triggerSelectedDownload('${taskId}')">Download</button>
-        `;
-        task.element.appendChild(container);
-      }
+      task.element.classList.add('awaiting-quality');
+      task.dock.innerHTML = `
+        <div class="quality-dock-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          Select Stream
+        </div>
+        <div class="quality-chips-grid">
+          ${payload.qualities.map((q, idx) => `
+            <button class="quality-chip ${idx === 0 ? 'highest' : ''}" style="--i: ${idx}" onclick="triggerSelectedQuality('${taskId}', '${q}')">
+              <span class="q-val">${q}p</span>
+              <span class="q-tag">${idx === 0 ? 'BEST' : (parseInt(q) >= 1080 ? 'FHD' : 'SD')}</span>
+            </button>
+          `).join('')}
+        </div>
+      `;
+
+      saveTasksToStorage();
     } catch(err) {
       console.error("Failed to parse probe data", err);
     }
@@ -506,7 +586,9 @@ evtSource.onmessage = function(event) {
 
     if (task.status !== "PAUSED" && task.status !== "STOPPED") {
       task.badge.className = "badge badge-downloading";
-      task.badge.textContent = "Downloading";
+      if (!task.badge.textContent.includes("p")) {
+        task.badge.textContent = "Downloading";
+      }
     }
 
     const p = parseAria(progStr);
@@ -547,3 +629,5 @@ async function submitBatch() {
     });
   }
 }
+
+restoreTasksFromStorage();
