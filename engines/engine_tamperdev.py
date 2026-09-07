@@ -8,7 +8,6 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 QUALITY_VARIANTS = ["2160", "4k", "1440", "1080", "720", "480", "360"]
 
 def probe_available_qualities(stream_url: str, referer: str, cookie_header: str) -> list[str]:
-    """Tests HEAD requests for all quality tokens and returns an ordered list of verified resolutions."""
     available = []
     for target_q in QUALITY_VARIANTS:
         candidate_url = re.sub(
@@ -32,14 +31,13 @@ def probe_available_qualities(stream_url: str, referer: str, cookie_header: str)
     return available if available else ["1080"]
 
 def probe(target_url: str, output_file: str):
-    """Scans and intercepts CDP stream tokens, discovers available qualities, and outputs PROBE_DATA."""
     sniffed_media_urls = set()
     session_cookies = []
 
     def process_url(url: str):
         if not url:
             return
-        if "get_stream" in url or ((".mp4" in url or ".m3u8" in url) and "tile.vtt" not in url):
+        if "get_stream" in url or ((".mp4" in url or ".m3u8" in url) and "tile.vtt" not in url and "preview" not in url):
             if url not in sniffed_media_urls:
                 sniffed_media_urls.add(url)
                 print(f"[+] Captured Token/Stream: {url}", flush=True)
@@ -100,12 +98,12 @@ def probe(target_url: str, output_file: str):
                 document.querySelectorAll('video').forEach(v => {
                     try { v.muted = true; v.play(); } catch(e){}
                 });
-                document.querySelectorAll('.fp-player, .play-button, button, video, [class*="play"]').forEach(btn => {
+                document.querySelectorAll('.fp-player, .play-button, button, video, [class*="play"], .player-holder, #player, .vjs-big-play-button').forEach(btn => {
                     try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e){}
                 });
             }"""
 
-            for _ in range(12):
+            for _ in range(18):
                 if any("get_stream" in u for u in sniffed_media_urls):
                     break
                 for frame in page.frames:
@@ -113,6 +111,10 @@ def probe(target_url: str, output_file: str):
                         frame.evaluate(click_script)
                     except Exception:
                         pass
+                try:
+                    page.mouse.click(960, 540)
+                except Exception:
+                    pass
                 page.wait_for_timeout(1000)
 
             session_cookies = context.cookies()

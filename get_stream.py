@@ -24,15 +24,21 @@ cfg = engine_matcher.match_url(target_url)
 profile_name = cfg.get("name", "Default")
 engine_mode = cfg.get("engine_mode", "bigcdn").lower()
 
-# 2. Resolve Output Filename
-parsed_path = urlparse(target_url).path.strip("/")
-last_segment = parsed_path.split("/")[-1] if parsed_path else "video"
-base_name = re.sub(r'\.(html|htm|php|asp|aspx)$', '', last_segment, flags=re.IGNORECASE)
-base_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', base_name).strip("._")
-if not base_name:
-    base_name = "downloaded_video"
+# 2. Resolve Robust Output Filename
+segments = [s for s in urlparse(target_url).path.strip("/").split("/") if s]
+target_segment = "downloaded_video"
 
-output_file = f"{base_name}.mp4"
+for s in reversed(segments):
+    cleaned = re.sub(r'\.(html|htm|php|asp|aspx)$', '', s, flags=re.IGNORECASE)
+    cleaned = re.sub(r'[^a-zA-Z0-9_\-]', '_', cleaned).strip("._")
+    if len(cleaned) > 2 and cleaned.lower() not in ["video", "watch", "play", "view", "v"]:
+        target_segment = cleaned
+        break
+else:
+    if segments:
+        target_segment = re.sub(r'[^a-zA-Z0-9_\-]', '_', segments[-1]).strip("._") or "downloaded_video"
+
+output_file = f"{target_segment}.mp4"
 
 print("=" * 65, flush=True)
 print(f"[*] Matched Profile : {profile_name}", flush=True)
@@ -40,7 +46,7 @@ print(f"[*] Engine Selected : {engine_mode.upper()}", flush=True)
 print(f"[*] Target Filename : {output_file}", flush=True)
 print("=" * 65, flush=True)
 
-# 3. Route Execution to PROBE (not run)
+# 3. Route Execution to PROBE
 if engine_mode == "tamperdev":
     success = engine_tamperdev.probe(target_url, output_file)
 else:

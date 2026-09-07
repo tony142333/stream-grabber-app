@@ -8,7 +8,6 @@ from playwright.sync_api import sync_playwright
 QUALITY_VARIANTS = ["2160", "4k", "1440", "1080", "720", "480", "360"]
 
 def probe_available_qualities(base_url: str, referer: str) -> list[str]:
-    """Probes HEAD requests for all available qualities on the CDN path."""
     available = []
     for q in QUALITY_VARIANTS:
         test_url = f"{base_url}/{q}.mp4"
@@ -30,7 +29,6 @@ def probe_available_qualities(base_url: str, referer: str) -> list[str]:
     return available if available else ["1080"]
 
 def probe(target_url: str, output_file: str):
-    """Scans and extracts available stream qualities without launching aria2c."""
     sniffed_mp4_urls = set()
     base_cdn_paths = set()
 
@@ -108,7 +106,6 @@ def probe(target_url: str, output_file: str):
     print("[*] Probing CDN path for all available resolutions...", flush=True)
     working_qualities = probe_available_qualities(primary_cdn_base, referer)
 
-    # Use a generic template URL where the frontend can replace {quality}
     base_template = f"{primary_cdn_base}/{{quality}}.mp4"
 
     payload = {

@@ -12,9 +12,12 @@ referer = sys.argv[3]
 cookie_header = sys.argv[4] if len(sys.argv) > 4 else ""
 download_dir = os.path.expanduser("~/downloads")
 
+os.makedirs(download_dir, exist_ok=True)
+
 print("=" * 60, flush=True)
 print(f"[✓] STARTING DOWNLOAD: {output_file}", flush=True)
 print(f"[✓] TARGET STREAM    : {stream_url}", flush=True)
+print(f"[✓] SAVING TO        : {download_dir}/{output_file}", flush=True)
 print("=" * 60, flush=True)
 
 aria2_cmd = [
@@ -34,16 +37,24 @@ if cookie_header.strip():
 
 aria2_cmd.append(stream_url)
 
-proc = subprocess.Popen(aria2_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+proc = subprocess.Popen(
+    aria2_cmd,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True,
+    bufsize=1
+)
+
 for line in iter(proc.stdout.readline, ''):
     cleaned = line.strip()
     if cleaned:
         print(cleaned, flush=True)
+
 proc.stdout.close()
 proc.wait()
 
 if proc.returncode != 0:
-    print(f"[-] Error: aria2c failed with code {proc.returncode}", flush=True)
-    sys.exit(1)
+    print(f"[-] Error: aria2c exited with return code {proc.returncode}", flush=True)
+    sys.exit(proc.returncode)
 
 sys.exit(0)
