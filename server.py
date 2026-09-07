@@ -91,14 +91,15 @@ def stream_process_worker(task_id: str, target_url: str):
                         push_log_sync(f"[{task_id}] {clean_line}")
 
                         # Map stdout lines to frontend state events
+                        # Map stdout lines to frontend state events
                         if "[*] Navigating to:" in clean_line:
                             push_log_sync(f"STATUS:{task_id}:SEARCHING:Navigating to target page...")
-                        elif "SAVING TO:" in clean_line:
+                        elif "SAVING TO" in clean_line:
                             filename = clean_line.split("/")[-1].strip()
                             push_log_sync(f"FILENAME:{task_id}:{filename}")
-                        elif "[+] Sniffed" in clean_line or "[*] Probing CDN path" in clean_line or "[+] Matched site profile" in clean_line:
+                        elif any(k in clean_line for k in ["[+] Sniffed", "[*] Probing CDN path", "[+] Matched site profile", "Captured Token/Stream"]):
                             push_log_sync(f"STATUS:{task_id}:FOUND:Stream found. Probing highest quality...")
-                        elif "HIGHEST QUALITY DETECTED:" in clean_line:
+                        elif "HIGHEST QUALITY DETECTED:" in clean_line or "RESOLVED STREAM" in clean_line:
                             push_log_sync(f"STATUS:{task_id}:DOWNLOADING:Starting download...")
                         elif clean_line.startswith("[#") and ("DL:" in clean_line or "%" in clean_line):
                             push_log_sync(f"PROGRESS:{task_id}:{clean_line}")

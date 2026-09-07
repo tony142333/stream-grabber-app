@@ -158,4 +158,9 @@ def run(target_url: str, output_file: str, download_dir: str):
             print(cleaned, flush=True)
     proc.stdout.close()
     proc.wait()
+
+    if proc.returncode != 0:
+        print(f"[-] Error: aria2c failed with return code {proc.returncode}", flush=True)
+        return False
+
     return True
