@@ -19,7 +19,6 @@ import uvicorn
 from modules.config_manager.config_core import config_router, CONFIG_DIR
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SCRIPT_PATH = os.path.join(BASE_DIR, "get_stream.py")
 DOWNLOADS_PATH = os.path.expanduser("~/downloads")
 
 log_queue = None
@@ -42,6 +41,13 @@ app.include_router(config_router, prefix="/api")
 class BatchRunRequest(BaseModel):
     urls: list[str]
 
+class DownloadTriggerRequest(BaseModel):
+    task_id: str
+    target_stream_url: str
+    output_filename: str
+    referer: str
+    cookies: str = ""
+
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
 def strip_ansi(text: str) -> str:
@@ -53,13 +59,14 @@ def push_log_sync(msg: str):
 
 def stream_process_worker(task_id: str, target_url: str):
     python_bin = sys.executable
+    probe_script = os.path.join(BASE_DIR, "probe_stream.py")
 
     push_log_sync(f"STATUS:{task_id}:SEARCHING:Initializing Playwright session...")
     push_log_sync(f"[{task_id}] [*] Starting task for: {target_url}")
 
     master_fd, slave_fd = pty.openpty()
     p = subprocess.Popen(
-        [python_bin, SCRIPT_PATH, target_url],
+        [python_bin, probe_script, target_url],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
@@ -68,6 +75,8 @@ def stream_process_worker(task_id: str, target_url: str):
     os.close(slave_fd)
 
     buffer = ""
+    probe_successful = False
+
     while True:
         r, _, _ = select.select([master_fd], [], [], 0.1)
         if master_fd in r:
@@ -87,25 +96,83 @@ def stream_process_worker(task_id: str, target_url: str):
 
                     clean_line = strip_ansi(line).strip()
                     if clean_line:
-                        # Pipe raw log to terminal view
+                        # Forward raw log to terminal window
                         push_log_sync(f"[{task_id}] {clean_line}")
 
-                        # Map stdout lines to frontend state events
-                        # Map stdout lines to frontend state events
-                        if "[*] Navigating to:" in clean_line:
-                            push_log_sync(f"STATUS:{task_id}:SEARCHING:Navigating to target page...")
-                        elif "SAVING TO" in clean_line:
-                            filename = clean_line.split("/")[-1].strip()
-                            push_log_sync(f"FILENAME:{task_id}:{filename}")
-                        elif any(k in clean_line for k in ["[+] Sniffed", "[*] Probing CDN path", "[+] Matched site profile", "Captured Token/Stream"]):
-                            push_log_sync(f"STATUS:{task_id}:FOUND:Stream found. Probing highest quality...")
-                        elif "HIGHEST QUALITY DETECTED:" in clean_line or "RESOLVED STREAM" in clean_line:
-                            push_log_sync(f"STATUS:{task_id}:DOWNLOADING:Starting download...")
-                        elif clean_line.startswith("[#") and ("DL:" in clean_line or "%" in clean_line):
-                            push_log_sync(f"PROGRESS:{task_id}:{clean_line}")
+                        # Map events to frontend state
+                        if clean_line.startswith("PROBE_DATA:"):
+                            probe_successful = True
+                            push_log_sync(f"PROBE_DATA:{task_id}:{clean_line.replace('PROBE_DATA:', '', 1)}")
+                            push_log_sync(f"STATUS:{task_id}:AWAITING_SELECTION:Choose quality")
+                        elif "[*] Navigating to:" in clean_line or "[*] Launching" in clean_line:
+                            push_log_sync(f"STATUS:{task_id}:SEARCHING:Navigating and sniffing stream tokens...")
+                        elif any(k in clean_line for k in ["[+] Captured", "[*] Probing CDN path", "[+] Verified available"]):
+                            push_log_sync(f"STATUS:{task_id}:FOUND:Stream intercepted. Verifying resolutions...")
                         elif "[-] Error:" in clean_line:
                             push_log_sync(f"STATUS:{task_id}:FAILED:{clean_line}")
 
+            except OSError:
+                break
+
+        if p.poll() is not None:
+            try:
+                trailing = strip_ansi(os.read(master_fd, 1024).decode("utf-8", errors="replace")).strip()
+                if trailing:
+                    push_log_sync(f"[{task_id}] {trailing}")
+                    if trailing.startswith("PROBE_DATA:"):
+                        probe_successful = True
+                        push_log_sync(f"PROBE_DATA:{task_id}:{trailing.replace('PROBE_DATA:', '', 1)}")
+                        push_log_sync(f"STATUS:{task_id}:AWAITING_SELECTION:Choose quality")
+            except OSError:
+                pass
+            break
+
+    os.close(master_fd)
+    p.wait()
+
+    if p.returncode != 0 and not probe_successful:
+        push_log_sync(f"STATUS:{task_id}:FAILED:Scan exited with code {p.returncode}")
+        push_log_sync(f"[{task_id}] [✗] Scan failed with exit code {p.returncode}")
+
+def download_process_worker(task_id: str, stream_url: str, output_file: str, referer: str, cookies: str):
+    python_bin = sys.executable
+    downloader_script = os.path.join(BASE_DIR, "downloader.py")
+
+    push_log_sync(f"STATUS:{task_id}:DOWNLOADING:Starting download...")
+    push_log_sync(f"FILENAME:{task_id}:{output_file}")
+
+    master_fd, slave_fd = pty.openpty()
+    p = subprocess.Popen(
+        [python_bin, downloader_script, stream_url, output_file, referer, cookies],
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        close_fds=True
+    )
+    os.close(slave_fd)
+
+    buffer = ""
+    while True:
+        r, _, _ = select.select([master_fd], [], [], 0.1)
+        if master_fd in r:
+            try:
+                data = os.read(master_fd, 1024).decode("utf-8", errors="replace")
+                if not data:
+                    break
+                buffer += data
+                while "\r" in buffer or "\n" in buffer:
+                    r_pos = buffer.find("\r")
+                    n_pos = buffer.find("\n")
+                    if r_pos != -1 and (n_pos == -1 or r_pos < n_pos):
+                        line, buffer = buffer[:r_pos], buffer[r_pos + 1:]
+                    else:
+                        line, buffer = buffer[:n_pos], buffer[n_pos + 1:]
+
+                    clean_line = strip_ansi(line).strip()
+                    if clean_line:
+                        push_log_sync(f"[{task_id}] {clean_line}")
+                        if clean_line.startswith("[#") and ("DL:" in clean_line or "%" in clean_line):
+                            push_log_sync(f"PROGRESS:{task_id}:{clean_line}")
             except OSError:
                 break
 
@@ -120,12 +187,13 @@ def stream_process_worker(task_id: str, target_url: str):
 
     os.close(master_fd)
     p.wait()
+
     if p.returncode == 0:
         push_log_sync(f"STATUS:{task_id}:COMPLETED:Finished")
         push_log_sync(f"[{task_id}] [✓] Task completed successfully")
     else:
-        push_log_sync(f"STATUS:{task_id}:FAILED:Process exited with code {p.returncode}")
-        push_log_sync(f"[{task_id}] [✗] Task failed with exit code {p.returncode}")
+        push_log_sync(f"STATUS:{task_id}:FAILED:Download exited with code {p.returncode}")
+        push_log_sync(f"[{task_id}] [✗] Download failed with exit code {p.returncode}")
 
 @app.get("/")
 def index():
@@ -172,6 +240,15 @@ async def run_batch(req: BatchRunRequest):
         created_tasks.append({"id": t_id, "url": raw_url})
         loop.run_in_executor(None, stream_process_worker, t_id, raw_url)
     return {"status": "queued", "tasks": created_tasks}
+
+@app.post("/api/start-download")
+async def start_download_endpoint(req: DownloadTriggerRequest):
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(
+        None, download_process_worker,
+        req.task_id, req.target_stream_url, req.output_filename, req.referer, req.cookies
+    )
+    return {"status": "started", "task_id": req.task_id}
 
 @app.get("/api/logs")
 async def stream_logs():

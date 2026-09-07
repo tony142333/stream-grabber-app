@@ -292,6 +292,41 @@ function parseAria(str) {
   };
 }
 
+// Global lookup to hold probe metadata per task
+const probedPayloads = {};
+
+async function triggerSelectedDownload(taskId) {
+  const payload = probedPayloads[taskId];
+  if (!payload) return;
+
+  const selectEl = document.getElementById(`sel-${taskId}`);
+  const chosenQuality = selectEl ? selectEl.value : (payload.qualities[0] || '1080');
+
+  // Replace quality variant in target token/stream URL
+  const streamUrl = payload.base_stream.replace(/(360|480|720|1080|1440|2160)/, chosenQuality);
+
+  // Remove the dropdown selector controls once triggered
+  const ctrl = document.getElementById(`quality-ctrl-${taskId}`);
+  if (ctrl) ctrl.remove();
+
+  const task = getOrCreateTask(taskId);
+  task.badge.className = "badge badge-downloading";
+  task.badge.textContent = "Downloading";
+  task.speed.textContent = `Queuing ${chosenQuality}p stream download...`;
+
+  await fetch('/api/start-download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      task_id: taskId,
+      target_stream_url: streamUrl,
+      output_filename: payload.filename,
+      referer: payload.referer,
+      cookies: payload.cookies || ""
+    })
+  });
+}
+
 const evtSource = new EventSource("/api/logs");
 evtSource.onmessage = function(event) {
   const raw = event.data;
@@ -316,7 +351,11 @@ evtSource.onmessage = function(event) {
     } else if (status === "FOUND") {
       task.badge.className = "badge badge-sniffing";
       task.badge.textContent = "Found";
-      task.speed.textContent = msg || "Probing stream resolution...";
+      task.speed.textContent = msg || "Probing stream resolutions...";
+    } else if (status === "AWAITING_SELECTION") {
+      task.badge.className = "badge badge-sniffing";
+      task.badge.textContent = "Select Quality";
+      task.speed.textContent = "Choose resolution below to proceed";
     } else if (status === "DOWNLOADING") {
       task.badge.className = "badge badge-downloading";
       task.badge.textContent = "Downloading";
@@ -353,6 +392,40 @@ evtSource.onmessage = function(event) {
     const filename = parts.slice(2).join(":");
     const task = getOrCreateTask(taskId);
     task.name.textContent = filename;
+  } else if (raw.startsWith("PROBE_DATA:")) {
+    const parts = raw.split(":");
+    const taskId = parts[1];
+    const jsonStr = parts.slice(2).join(":");
+    try {
+      const payload = JSON.parse(jsonStr);
+      probedPayloads[taskId] = payload;
+
+      const task = getOrCreateTask(taskId);
+      task.name.textContent = payload.filename || task.name.textContent;
+      task.badge.className = "badge badge-sniffing";
+      task.badge.textContent = "Select Quality";
+      task.speed.textContent = "Discovered stream options";
+
+      // Avoid injecting duplicate control boxes if received multiple times
+      if (!document.getElementById(`quality-ctrl-${taskId}`)) {
+        const container = document.createElement("div");
+        container.id = `quality-ctrl-${taskId}`;
+        container.style = "display: flex; gap: 8px; margin-top: 8px; align-items: center;";
+        container.innerHTML = `
+          <select id="sel-${taskId}" style="background:var(--bg-input); color:#fff; border:1px solid var(--border); padding:6px 10px; border-radius:6px; font-family:var(--font-mono); font-size:0.8rem; outline:none;">
+            ${payload.qualities.map((q, idx) => `
+              <option value="${q}" ${idx === 0 ? 'selected' : ''}>
+                ${q}p ${idx === 0 ? '(Highest Available)' : ''}
+              </option>
+            `).join('')}
+          </select>
+          <button class="btn-new-task" style="padding:6px 14px; font-size:0.8rem; cursor:pointer;" onclick="triggerSelectedDownload('${taskId}')">Download</button>
+        `;
+        task.element.appendChild(container);
+      }
+    } catch(err) {
+      console.error("Failed to parse probe data", err);
+    }
   } else if (raw.startsWith("PROGRESS:")) {
     const parts = raw.split(":");
     const taskId = parts[1];
