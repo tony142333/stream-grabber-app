@@ -7,15 +7,15 @@ import re
 import uuid
 import sys
 import shutil
+import signal
 from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
-# Config Engine Router Hook
 from modules.config_manager.config_core import config_router, CONFIG_DIR
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -23,6 +23,7 @@ DOWNLOADS_PATH = os.path.expanduser("~/downloads")
 
 log_queue = None
 main_loop = None
+active_tasks = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,7 +35,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="EC2 Stream Grabber Console", lifespan=lifespan)
 
-# Mount Static Files & Config Router
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 app.include_router(config_router, prefix="/api")
 
@@ -59,20 +59,22 @@ def push_log_sync(msg: str):
 
 def stream_process_worker(task_id: str, target_url: str):
     python_bin = sys.executable
-    probe_script = os.path.join(BASE_DIR, "probe_stream.py")
+    scan_script = os.path.join(BASE_DIR, "get_stream.py")
 
     push_log_sync(f"STATUS:{task_id}:SEARCHING:Initializing Playwright session...")
     push_log_sync(f"[{task_id}] [*] Starting task for: {target_url}")
 
     master_fd, slave_fd = pty.openpty()
     p = subprocess.Popen(
-        [python_bin, probe_script, target_url],
+        [python_bin, scan_script, target_url],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
-        close_fds=True
+        close_fds=True,
+        preexec_fn=os.setsid
     )
     os.close(slave_fd)
+    active_tasks[task_id] = {"process": p, "status": "SEARCHING"}
 
     buffer = ""
     probe_successful = False
@@ -96,18 +98,16 @@ def stream_process_worker(task_id: str, target_url: str):
 
                     clean_line = strip_ansi(line).strip()
                     if clean_line:
-                        # Forward raw log to terminal window
                         push_log_sync(f"[{task_id}] {clean_line}")
 
-                        # Map events to frontend state
                         if clean_line.startswith("PROBE_DATA:"):
                             probe_successful = True
                             push_log_sync(f"PROBE_DATA:{task_id}:{clean_line.replace('PROBE_DATA:', '', 1)}")
                             push_log_sync(f"STATUS:{task_id}:AWAITING_SELECTION:Choose quality")
                         elif "[*] Navigating to:" in clean_line or "[*] Launching" in clean_line:
                             push_log_sync(f"STATUS:{task_id}:SEARCHING:Navigating and sniffing stream tokens...")
-                        elif any(k in clean_line for k in ["[+] Captured", "[*] Probing CDN path", "[+] Verified available"]):
-                            push_log_sync(f"STATUS:{task_id}:FOUND:Stream intercepted. Verifying resolutions...")
+                        elif any(k in clean_line for k in ["[+] Captured", "[*] Probing for all available", "[+] Verified stream variant"]):
+                            push_log_sync(f"STATUS:{task_id}:FOUND:Stream intercepted. Testing resolutions...")
                         elif "[-] Error:" in clean_line:
                             push_log_sync(f"STATUS:{task_id}:FAILED:{clean_line}")
 
@@ -115,24 +115,17 @@ def stream_process_worker(task_id: str, target_url: str):
                 break
 
         if p.poll() is not None:
-            try:
-                trailing = strip_ansi(os.read(master_fd, 1024).decode("utf-8", errors="replace")).strip()
-                if trailing:
-                    push_log_sync(f"[{task_id}] {trailing}")
-                    if trailing.startswith("PROBE_DATA:"):
-                        probe_successful = True
-                        push_log_sync(f"PROBE_DATA:{task_id}:{trailing.replace('PROBE_DATA:', '', 1)}")
-                        push_log_sync(f"STATUS:{task_id}:AWAITING_SELECTION:Choose quality")
-            except OSError:
-                pass
             break
 
     os.close(master_fd)
     p.wait()
 
-    if p.returncode != 0 and not probe_successful:
-        push_log_sync(f"STATUS:{task_id}:FAILED:Scan exited with code {p.returncode}")
-        push_log_sync(f"[{task_id}] [✗] Scan failed with exit code {p.returncode}")
+    if p.returncode == 0:
+        if not probe_successful:
+            push_log_sync(f"STATUS:{task_id}:FAILED:No stream variants discovered")
+    else:
+        if active_tasks.get(task_id, {}).get("status") != "STOPPED":
+            push_log_sync(f"STATUS:{task_id}:FAILED:Scan exited with code {p.returncode}")
 
 def download_process_worker(task_id: str, stream_url: str, output_file: str, referer: str, cookies: str):
     python_bin = sys.executable
@@ -147,9 +140,11 @@ def download_process_worker(task_id: str, stream_url: str, output_file: str, ref
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
-        close_fds=True
+        close_fds=True,
+        preexec_fn=os.setsid
     )
     os.close(slave_fd)
+    active_tasks[task_id] = {"process": p, "status": "DOWNLOADING"}
 
     buffer = ""
     while True:
@@ -177,23 +172,23 @@ def download_process_worker(task_id: str, stream_url: str, output_file: str, ref
                 break
 
         if p.poll() is not None:
-            try:
-                trailing = strip_ansi(os.read(master_fd, 1024).decode("utf-8", errors="replace")).strip()
-                if trailing:
-                    push_log_sync(f"[{task_id}] {trailing}")
-            except OSError:
-                pass
             break
 
     os.close(master_fd)
     p.wait()
 
-    if p.returncode == 0:
+    current_state = active_tasks.get(task_id, {}).get("status")
+    if current_state == "STOPPED":
+        push_log_sync(f"STATUS:{task_id}:STOPPED:Download stopped")
+        push_log_sync(f"[{task_id}] [!] Download stopped by user")
+    elif p.returncode == 0:
         push_log_sync(f"STATUS:{task_id}:COMPLETED:Finished")
         push_log_sync(f"[{task_id}] [✓] Task completed successfully")
     else:
         push_log_sync(f"STATUS:{task_id}:FAILED:Download exited with code {p.returncode}")
-        push_log_sync(f"[{task_id}] [✗] Download failed with exit code {p.returncode}")
+        push_log_sync(f"[{task_id}] [✗] Download failed with code {p.returncode}")
+
+    active_tasks.pop(task_id, None)
 
 @app.get("/")
 def index():
@@ -249,6 +244,46 @@ async def start_download_endpoint(req: DownloadTriggerRequest):
         req.task_id, req.target_stream_url, req.output_filename, req.referer, req.cookies
     )
     return {"status": "started", "task_id": req.task_id}
+
+@app.post("/api/task/{task_id}/pause")
+def pause_task(task_id: str):
+    info = active_tasks.get(task_id)
+    if not info or not info.get("process"):
+        raise HTTPException(status_code=404, detail="Task not actively running")
+    try:
+        os.killpg(os.getpgid(info["process"].pid), signal.SIGSTOP)
+        info["status"] = "PAUSED"
+        push_log_sync(f"STATUS:{task_id}:PAUSED:Paused")
+        push_log_sync(f"[{task_id}] [⏸] Download paused")
+        return {"status": "paused"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/task/{task_id}/resume")
+def resume_task(task_id: str):
+    info = active_tasks.get(task_id)
+    if not info or not info.get("process"):
+        raise HTTPException(status_code=404, detail="Task not actively paused")
+    try:
+        os.killpg(os.getpgid(info["process"].pid), signal.SIGCONT)
+        info["status"] = "DOWNLOADING"
+        push_log_sync(f"STATUS:{task_id}:DOWNLOADING:Resumed")
+        push_log_sync(f"[{task_id}] [▶] Download resumed")
+        return {"status": "resumed"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/task/{task_id}/stop")
+def stop_task(task_id: str):
+    info = active_tasks.get(task_id)
+    if not info or not info.get("process"):
+        raise HTTPException(status_code=404, detail="Task not actively running")
+    try:
+        info["status"] = "STOPPED"
+        os.killpg(os.getpgid(info["process"].pid), signal.SIGTERM)
+        return {"status": "stopping"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/logs")
 async def stream_logs():

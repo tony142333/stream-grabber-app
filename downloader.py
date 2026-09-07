@@ -22,6 +22,7 @@ print("=" * 60, flush=True)
 
 aria2_cmd = [
     "aria2c",
+    "-c",
     "-x", "16",
     "-s", "16",
     "-k", "1M",
