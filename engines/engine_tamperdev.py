@@ -1,19 +1,21 @@
 import os
 import re
-import subprocess
+import json
 import urllib.request
 from playwright.sync_api import sync_playwright
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 QUALITY_VARIANTS = ["2160", "4k", "1440", "1080", "720", "480", "360"]
 
-def upgrade_to_highest_quality(stream_url: str, referer: str, cookie_header: str) -> str:
-    """Substitutes lower quality tokens (-360.mp4) with 1080p and verifies via HEAD request."""
+def probe_available_qualities(stream_url: str, referer: str, cookie_header: str) -> list[str]:
+    """Tests HEAD requests for all quality tokens and returns an ordered list of verified resolutions."""
+    available = []
     for target_q in QUALITY_VARIANTS:
-        candidate_url = re.sub(r'([-_/])(360|480|720|1080|1440|2160)(\.mp4|p\.mp4|\?)', rf'\g<1>{target_q}\g<3>', stream_url)
-        if candidate_url == stream_url and target_q in stream_url:
-            return stream_url
-
+        candidate_url = re.sub(
+            r'([-_/])(360|480|720|1080|1440|2160)(\.mp4|p\.mp4|\?)',
+            rf'\g<1>{target_q}\g<3>',
+            stream_url
+        )
         req = urllib.request.Request(
             candidate_url,
             headers={"Referer": referer, "Cookie": cookie_header, "User-Agent": USER_AGENT},
@@ -22,13 +24,15 @@ def upgrade_to_highest_quality(stream_url: str, referer: str, cookie_header: str
         try:
             with urllib.request.urlopen(req, timeout=4) as resp:
                 if resp.status == 200:
-                    print(f"[+] Successfully upgraded stream token to: {target_q}p", flush=True)
-                    return candidate_url
+                    print(f"[+] Verified stream variant: {target_q}p", flush=True)
+                    available.append(target_q)
         except Exception:
             continue
-    return stream_url
 
-def run(target_url: str, output_file: str, download_dir: str):
+    return available if available else ["1080"]
+
+def probe(target_url: str, output_file: str):
+    """Scans and intercepts CDP stream tokens, discovers available qualities, and outputs PROBE_DATA."""
     sniffed_media_urls = set()
     session_cookies = []
 
@@ -128,39 +132,21 @@ def run(target_url: str, output_file: str, download_dir: str):
     get_stream_candidates = [u for u in sniffed_media_urls if "get_stream" in u]
     selected_url = get_stream_candidates[0] if get_stream_candidates else list(sniffed_media_urls)[0]
 
-    print("[*] Probing for highest quality stream variant...", flush=True)
-    target_stream_url = upgrade_to_highest_quality(selected_url, referer, cookie_header_val)
+    print("[*] Probing for all available stream resolutions...", flush=True)
+    working_qualities = probe_available_qualities(selected_url, referer, cookie_header_val)
+
+    payload = {
+        "base_stream": selected_url,
+        "referer": referer,
+        "cookies": cookie_header_val,
+        "filename": output_file,
+        "qualities": working_qualities
+    }
 
     print("=" * 60, flush=True)
-    print(f"[✓] RESOLVED STREAM : {target_stream_url}", flush=True)
-    print(f"[✓] COOKIES ATTACHED: {len(session_cookies)} items", flush=True)
-    print(f"[✓] SAVING TO       : {download_dir}/{output_file}", flush=True)
+    print(f"[✓] RESOLVED BASE TOKEN: {selected_url}", flush=True)
+    print(f"[✓] AVAILABLE RESOLUTIONS: {', '.join(working_qualities)}p", flush=True)
     print("=" * 60, flush=True)
 
-    aria2_cmd = [
-        "aria2c",
-        "-x", "16",
-        "-s", "16",
-        "-k", "1M",
-        "--summary-interval=1",
-        f"--header=Referer: {referer}",
-        f"--header=Cookie: {cookie_header_val}",
-        f"--user-agent={USER_AGENT}",
-        f"--dir={download_dir}",
-        "-o", output_file,
-        target_stream_url
-    ]
-
-    proc = subprocess.Popen(aria2_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    for line in iter(proc.stdout.readline, ''):
-        cleaned = line.strip()
-        if cleaned:
-            print(cleaned, flush=True)
-    proc.stdout.close()
-    proc.wait()
-
-    if proc.returncode != 0:
-        print(f"[-] Error: aria2c failed with return code {proc.returncode}", flush=True)
-        return False
-
+    print(f"PROBE_DATA:{json.dumps(payload)}", flush=True)
     return True

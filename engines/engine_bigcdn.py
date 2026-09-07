@@ -1,14 +1,15 @@
 import os
 import re
-import subprocess
+import json
 import urllib.request
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 QUALITY_VARIANTS = ["2160", "4k", "1440", "1080", "720", "480", "360"]
 
-def probe_highest_quality(base_url: str, referer: str) -> str:
-    """Probes HEAD request for highest available quality on the CDN path."""
+def probe_available_qualities(base_url: str, referer: str) -> list[str]:
+    """Probes HEAD requests for all available qualities on the CDN path."""
+    available = []
     for q in QUALITY_VARIANTS:
         test_url = f"{base_url}/{q}.mp4"
         req = urllib.request.Request(
@@ -23,12 +24,13 @@ def probe_highest_quality(base_url: str, referer: str) -> str:
             with urllib.request.urlopen(req, timeout=3) as resp:
                 if resp.status == 200:
                     print(f"[+] Verified available stream: {q}p -> {test_url}", flush=True)
-                    return test_url
+                    available.append(q)
         except Exception:
             continue
-    return f"{base_url}/1080.mp4"
+    return available if available else ["1080"]
 
-def run(target_url: str, output_file: str, download_dir: str):
+def probe(target_url: str, output_file: str):
+    """Scans and extracts available stream qualities without launching aria2c."""
     sniffed_mp4_urls = set()
     base_cdn_paths = set()
 
@@ -84,55 +86,38 @@ def run(target_url: str, output_file: str, download_dir: str):
         finally:
             browser.close()
 
-    target_stream_url = None
     primary_cdn_base = None
-
     if sniffed_mp4_urls:
         for q in QUALITY_VARIANTS:
             matched = [u for u in sniffed_mp4_urls if f"/{q}.mp4" in u]
             if matched:
-                target_stream_url = matched[0]
-                primary_cdn_base = target_stream_url.rsplit("/", 1)[0]
+                primary_cdn_base = matched[0].rsplit("/", 1)[0]
                 break
-        if not primary_cdn_base and sniffed_mp4_urls:
+        if not primary_cdn_base:
             primary_cdn_base = list(sniffed_mp4_urls)[0].rsplit("/", 1)[0]
     elif base_cdn_paths:
         primary_cdn_base = list(base_cdn_paths)[0]
 
-    if not primary_cdn_base and not target_stream_url:
+    if not primary_cdn_base:
         print("[-] Error: No matching BigCDN stream or path found.", flush=True)
         return False
 
-    referer_match = re.search(r'(https?://[^/]+bigcdn\.cc)/', primary_cdn_base if primary_cdn_base else target_stream_url)
+    referer_match = re.search(r'(https?://[^/]+bigcdn\.cc)/', primary_cdn_base)
     referer = f"{referer_match.group(1)}/" if referer_match else "https://s6.bigcdn.cc/"
 
-    if primary_cdn_base:
-        print("[*] Probing CDN path for highest resolution (2160p/4K -> 1080p -> 720p)...", flush=True)
-        target_stream_url = probe_highest_quality(primary_cdn_base, referer)
+    print("[*] Probing CDN path for all available resolutions...", flush=True)
+    working_qualities = probe_available_qualities(primary_cdn_base, referer)
 
-    print("=" * 60, flush=True)
-    print(f"HIGHEST QUALITY DETECTED: {target_stream_url}", flush=True)
-    print(f"SAVING TO: {download_dir}/{output_file}", flush=True)
-    print("=" * 60, flush=True)
+    # Use a generic template URL where the frontend can replace {quality}
+    base_template = f"{primary_cdn_base}/{{quality}}.mp4"
 
-    aria2_cmd = [
-        "aria2c",
-        "-x", "16",
-        "-s", "16",
-        "-k", "1M",
-        "--summary-interval=1",
-        f"--header=Referer: {referer}",
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        f"--dir={download_dir}",
-        "-o", output_file,
-        target_stream_url
-    ]
+    payload = {
+        "base_stream": base_template,
+        "referer": referer,
+        "cookies": "",
+        "filename": output_file,
+        "qualities": working_qualities
+    }
 
-    proc = subprocess.Popen(aria2_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    for line in iter(proc.stdout.readline, ''):
-        cleaned = line.strip()
-        if cleaned:
-            print(cleaned, flush=True)
-    proc.stdout.close()
-    proc.wait()
+    print(f"PROBE_DATA:{json.dumps(payload)}", flush=True)
     return True

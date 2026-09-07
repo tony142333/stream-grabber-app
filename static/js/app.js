@@ -302,8 +302,13 @@ async function triggerSelectedDownload(taskId) {
   const selectEl = document.getElementById(`sel-${taskId}`);
   const chosenQuality = selectEl ? selectEl.value : (payload.qualities[0] || '1080');
 
-  // Replace quality variant in target token/stream URL
-  const streamUrl = payload.base_stream.replace(/(360|480|720|1080|1440|2160)/, chosenQuality);
+  // Handle both template strings ({quality}.mp4) and regex replacement (13794-360.mp4)
+  let streamUrl = payload.base_stream;
+  if (streamUrl.includes("{quality}")) {
+    streamUrl = streamUrl.replace("{quality}", chosenQuality);
+  } else {
+    streamUrl = streamUrl.replace(/(360|480|720|1080|1440|2160)/, chosenQuality);
+  }
 
   // Remove the dropdown selector controls once triggered
   const ctrl = document.getElementById(`quality-ctrl-${taskId}`);
