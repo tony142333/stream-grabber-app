@@ -12,20 +12,28 @@ MP4_PATTERN = re.compile(
     r'(https?://[^\s"\'<>\\]+?_(\d{3,4}p)\.mp4/?\?[^\s"\'<>\\]*?v-acctoken=[^\s"\'<>\\&]+'
     r'(?:(?:&amp;|&)[^\s"\'<>\\]*)?)'
 )
-# Video pages look like /the-nanny-s-secret_v1/ or end in .html or contain /video/
-VIDEO_HREF = re.compile(r'(/video/|\.html$|_v\d+/?$)')
+# Video pages look like https://pimpbunny.com/videos/<slug>/  (legacy: /video/, .html, _v1/)
+VIDEO_HREF = re.compile(r'(/videos?/[^/?#]+/?$|\.html$|_v\d+/?$)')
 
 LINK_JS = """
-() => Array.from(document.querySelectorAll(
-    '.video-list-item a, .item-video a, .list-videos a, .item a'
-)).map(a => {
-    const img = a.querySelector('img');
-    return {
-        url: a.href,
-        title: (a.getAttribute('title') || (img && img.alt) || a.textContent || '').trim(),
-        thumb: img ? (img.dataset.original || img.dataset.src || img.src || '') : ''
-    };
-})
+() => {
+    // Class names like "ui-card-link__KxRw6l" carry a build hash, so match on the stable prefix.
+    // "b6m-video" is a plain, unhashed class on the card.
+    const anchors = Array.from(document.querySelectorAll(
+        '.b6m-video a[href], [class*="ui-card-video"] a[href], a[class*="ui-card-link"][href], a[href*="/videos/"]'
+    ));
+    return anchors.map(a => {
+        const card = a.closest('.b6m-video, [class*="ui-card-video"]') || a.parentElement;
+        const img = card ? card.querySelector('img') : null;
+        const info = card ? card.querySelector('[class*="ui-card-info"]') : null;
+        return {
+            url: a.href,
+            title: ((info && info.innerText) || a.getAttribute('title') || (img && img.alt) || a.innerText || '')
+                       .trim().split('\\n')[0],
+            thumb: img ? (img.dataset.original || img.dataset.src || img.currentSrc || img.src || '') : ''
+        };
+    });
+}
 """
 
 
@@ -49,7 +57,7 @@ class PimpBunnyEngine:
             try:
                 for page_num in range(1, max_pages + 1):
                     # Keep the same sort on every page so pagination is consistent
-                    target = f"{base_url}/?sort_by=rating" if page_num == 1 \
+                    target = f"{base_url}/" if page_num == 1 \
                         else f"{base_url}/{page_num}/?sort_by=rating"
                     print(f"Scraping page {page_num}...", flush=True)
 
@@ -57,6 +65,12 @@ class PimpBunnyEngine:
                     if response is None or response.status >= 400:
                         print("Reached end of pagination (HTTP error).", flush=True)
                         break
+
+                    # cards may be rendered client-side; give them a moment to appear
+                    try:
+                        await page.wait_for_selector('a[href*="/videos/"]', timeout=15000)
+                    except Exception:
+                        pass
 
                     items = await page.evaluate(LINK_JS)
                     new_on_page = 0
@@ -72,6 +86,13 @@ class PimpBunnyEngine:
                     # Out-of-range pages sometimes re-serve the last page instead of 404
                     if new_on_page == 0:
                         print("No new videos on this page. Stopping.", flush=True)
+                        if page_num == 1:   # help debug selector / bot-wall problems
+                            body = (await page.inner_text("body"))[:300].replace("\n", " ")
+                            print(f"  [debug] final URL : {page.url}", flush=True)
+                            print(f"  [debug] title     : {await page.title()}", flush=True)
+                            print(f"  [debug] anchors   : {len(items)} matched, "
+                                  f"{await page.locator('a').count()} total on page", flush=True)
+                            print(f"  [debug] body start: {body}", flush=True)
                         break
             finally:
                 await browser.close()
