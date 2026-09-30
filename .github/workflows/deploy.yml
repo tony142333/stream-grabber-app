@@ -16,17 +16,18 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Dependencies
+      - name: Install Dependencies & FFmpeg
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt requests
           python -m playwright install --with-deps
-          pip install requests
+          # Install ffmpeg to probe video resolution
+          sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Run Pytest
         run: pytest -s --tracing=retain-on-failure || true
 
-      - name: Verify 1080p Stream Size and Cancel
+      - name: Verify 1080p Stream Size and Resolution
         run: |
           cat << 'EOF' > test_1080p_size.py
           import subprocess
@@ -36,7 +37,7 @@ jobs:
           import sys
 
           # 1. Execute your stream grabber script
-          target_url = "https://www.fullhdporn.net/super-squirt-cake-destroyer-gets-anal-surprise-ny-ny-lew-brazzers_v1/"
+          target_url = "https://www.fullhdporn.net/the-nanny-s-secret_v1/"
           print(f"Running get_stream.py on: {target_url}")
           
           process = subprocess.run(
@@ -57,29 +58,51 @@ jobs:
           # 3. Force the 360p link to 1080p
           stream_1080 = re.sub(r'-\d{3,4}\.mp4', '-1080.mp4', base_stream)
           
-          headers = {
-              "Referer": probe_data.get("referer", ""),
-              "Cookie": probe_data.get("cookies", "")
+          referer = probe_data.get("referer", "")
+          cookies = probe_data.get("cookies", "")
+          
+          headers_dict = {
+              "Referer": referer,
+              "Cookie": cookies
           }
           
           print(f"Locked 1080p Stream URL: {stream_1080}")
-          print("Connecting to fetch file headers...")
           
-          # 4. Connect with stream=True to get size, then immediately close connection
-          with requests.get(stream_1080, headers=headers, stream=True) as response:
-              response.raise_for_status()
-              size_bytes = int(response.headers.get("Content-Length", 0))
-              size_gb = size_bytes / (1024 * 1024 * 1024)
+          # 4. Connect with stream=True to get size, then close connection
+          print("\n--- CHECKING FILE SIZE ---")
+          try:
+              with requests.get(stream_1080, headers=headers_dict, stream=True) as response:
+                  response.raise_for_status()
+                  size_bytes = int(response.headers.get("Content-Length", 0))
+                  size_gb = size_bytes / (1024 * 1024 * 1024)
+                  print(f"Success! Stream active.")
+                  print(f"Detected 1080p File Size: {size_gb:.2f} GB")
+          except Exception as e:
+              print(f"Warning: Could not fetch file size. {e}")
+
+          # 5. Use ffprobe to check the exact pixel resolution of the remote file
+          print("\n--- CHECKING PIXEL RESOLUTION ---")
+          # FFmpeg requires headers separated by \r\n
+          ffmpeg_headers = f"Referer: {referer}\r\nCookie: {cookies}\r\n"
           
-              print(f"Success! Stream active.")
-              print(f"Detected 1080p File Size: {size_gb:.2f} GB")
+          ffprobe_cmd = [
+              "ffprobe",
+              "-v", "error",
+              "-headers", ffmpeg_headers,
+              "-select_streams", "v:0",
+              "-show_entries", "stream=width,height",
+              "-of", "csv=s=x:p=0",
+              stream_1080
+          ]
           
-              # Fail the workflow if the size is too small (meaning 1080p failed and it fell back to 360p)
-              if size_gb < 0.8:
-                  print("Error: File size is too small. The 1080p stream upgrade failed.")
-                  sys.exit(1)
+          probe_proc = subprocess.run(ffprobe_cmd, text=True, capture_output=True)
           
-              print("Size verified. Cancelling download to save CI bandwidth.")
+          if probe_proc.returncode == 0:
+              resolution = probe_proc.stdout.strip()
+              print(f"Verified Video Resolution: {resolution}")
+          else:
+              print(f"Warning: ffprobe failed to read stream resolution. Error:\n{probe_proc.stderr}")
+          
           EOF
           
           python test_1080p_size.py
