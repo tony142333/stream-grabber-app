@@ -28,6 +28,13 @@ jobs:
       - name: Execute Test Download (1080p)
         run: |
           echo "1080p" | python get_stream.py "https://www.fullhdporn.net/the-nanny-s-secret_v1/"
+          
+          echo "--- Downloaded File Info ---"
+          # Lists all files in the current directory with human-readable sizes
+          ls -lh 
+          
+          # If your app saves to a specific folder like 'downloads', uncomment the line below:
+          # ls -lh downloads/
 
       - name: Upload Test Artifacts
         uses: actions/upload-artifact@v4
