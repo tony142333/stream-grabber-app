@@ -21,29 +21,68 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -m playwright install --with-deps
+          pip install requests
 
       - name: Run Pytest
         run: pytest -s --tracing=retain-on-failure || true
 
-      - name: Execute Test Download (1080p)
+      - name: Verify 1080p Stream Size and Cancel
         run: |
-          echo "1080p" | python get_stream.py "https://www.fullhdporn.net/the-nanny-s-secret_v1/"
+          cat << 'EOF' > test_1080p_size.py
+          import subprocess
+          import json
+          import requests
+          import re
+          import sys
+
+          # 1. Execute your stream grabber script
+          target_url = "https://www.fullhdporn.net/the-nanny-s-secret_v1/"
+          print(f"Running get_stream.py on: {target_url}")
           
-          echo "--- Downloaded File Info ---"
-          # Lists all files in the current directory with human-readable sizes
-          ls -lh 
+          process = subprocess.run(
+              ["python", "get_stream.py", target_url], 
+              text=True, 
+              capture_output=True
+          )
           
-          # If your app saves to a specific folder like 'downloads', uncomment the line below:
-          # ls -lh downloads/
-      - name: Verify Stream & Start Download (1080p)
-        run: |
-          # The pipe (echo "1080p" |) replaces your manual UI click/terminal input.
-          # The -u flag streams your script's output to the GitHub logs instantly.
-          # We use 'timeout 45s' to let the download start and print the file size, 
-          # but stop it before it downloads a massive file and wastes your CI minutes.
+          # 2. Extract PROBE_DATA JSON from the console output
+          probe_match = re.search(r'PROBE_DATA:({.*})', process.stdout)
+          if not probe_match:
+              print("Failed to find PROBE_DATA. Script output:\n", process.stdout)
+              sys.exit(1)
           
-          timeout 45s bash -c 'echo "1080p" | python -u get_stream.py "https://www.fullhdporn.net/the-nanny-s-secret_v1/"' || true
-      
+          probe_data = json.loads(probe_match.group(1))
+          base_stream = probe_data.get("base_stream")
+          
+          # 3. Force the 360p link to 1080p
+          stream_1080 = re.sub(r'-\d{3,4}\.mp4', '-1080.mp4', base_stream)
+          
+          headers = {
+              "Referer": probe_data.get("referer", ""),
+              "Cookie": probe_data.get("cookies", "")
+          }
+          
+          print(f"Locked 1080p Stream URL: {stream_1080}")
+          print("Connecting to fetch file headers...")
+          
+          # 4. Connect with stream=True to get size, then immediately close connection
+          with requests.get(stream_1080, headers=headers, stream=True) as response:
+              response.raise_for_status()
+              size_bytes = int(response.headers.get("Content-Length", 0))
+              size_gb = size_bytes / (1024 * 1024 * 1024)
+          
+              print(f"Success! Stream active.")
+              print(f"Detected 1080p File Size: {size_gb:.2f} GB")
+          
+              # Fail the workflow if the size is too small (meaning 1080p failed and it fell back to 360p)
+              if size_gb < 0.8:
+                  print("Error: File size is too small. The 1080p stream upgrade failed.")
+                  sys.exit(1)
+          
+              print("Size verified. Cancelling download to save CI bandwidth.")
+          EOF
+          
+          python test_1080p_size.py
 
       - name: Upload Test Artifacts
         uses: actions/upload-artifact@v4
@@ -52,4 +91,3 @@ jobs:
           name: playwright-traces
           path: test-results/
           retention-days: 30
-
