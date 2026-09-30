@@ -35,14 +35,14 @@ jobs:
           
           # If your app saves to a specific folder like 'downloads', uncomment the line below:
           # ls -lh downloads/
-            - name: Verify Stream & Start Download (1080p)
-          run: |
-            # The pipe (echo "1080p" |) replaces your manual UI click/terminal input.
-            # The -u flag streams your script's output to the GitHub logs instantly.
-            # We use 'timeout 45s' to let the download start and print the file size, 
-            # but stop it before it downloads a massive file and wastes your CI minutes.
+      - name: Verify Stream & Start Download (1080p)
+        run: |
+          # The pipe (echo "1080p" |) replaces your manual UI click/terminal input.
+          # The -u flag streams your script's output to the GitHub logs instantly.
+          # We use 'timeout 45s' to let the download start and print the file size, 
+          # but stop it before it downloads a massive file and wastes your CI minutes.
           
-            timeout 45s bash -c 'echo "1080p" | python -u get_stream.py "https://example.com/test-video-url"' || true
+          timeout 45s bash -c 'echo "1080p" | python -u get_stream.py "https://www.fullhdporn.net/the-nanny-s-secret_v1/"' || true
       
 
       - name: Upload Test Artifacts
