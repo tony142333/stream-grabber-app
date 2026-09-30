@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import time
 from playwright.async_api import async_playwright
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -101,18 +102,58 @@ class PimpBunnyEngine:
         print(f"Total unique videos found: {len(videos)}", flush=True)
         return videos
 
-    async def probe_video(self, video_url):
+    @staticmethod
+    def _mask(u):
+        return re.sub(r"(v-acctoken=)[^&\s]+", r"\1***", u)
+
+    async def _try_play(self, page):
+        """Best effort: dismiss an age gate and start the player so it requests its mp4."""
+        try:
+            btn = page.get_by_role("button", name=re.compile(r"(i am|i'm) 18|enter|agree", re.I)).first
+            if await btn.count():
+                await btn.click(timeout=1500)
+        except Exception:
+            pass
+        try:
+            await page.evaluate("() => { const v = document.querySelector('video');"
+                                " if (v) { v.muted = true; v.play().catch(() => {}); } }")
+        except Exception:
+            pass
+        for sel in ['.fp-play', '.jw-icon-display', '.vjs-big-play-button',
+                    'button[aria-label*="lay" i]', '[class*="play" i]']:
+            try:
+                el = page.locator(sel).first
+                if await el.count():
+                    await el.click(timeout=1500)
+                    break
+            except Exception:
+                continue
+
+    async def probe_video(self, video_url, max_wait=40):
         """
         Open one video page, return tokenized direct links per quality plus
         cookies + referer for the downloader.
+
+        Video pages keep loading ads/trackers forever, so we never wait for
+        "networkidle": we load the DOM, then poll until a media link shows up.
         """
         print(f"Probing video: {video_url}", flush=True)
-        sniffed = {}  # quality -> url captured from real network requests
+        sniffed = {}      # quality -> url captured from real network requests
+        media_seen = []   # every media-looking request (for diagnostics)
 
         def on_request(req):
-            m = re.search(r'_(\d{3,4}p)\.mp4', req.url)
-            if m and "v-acctoken" in req.url:
-                sniffed[m.group(1)] = req.url
+            u = req.url
+            if re.search(r"\.(mp4|m3u8|webm)(\?|/|$)", u):
+                media_seen.append(u)
+            m = re.search(r"_(\d{3,4})p\.mp4", u)
+            if m:
+                sniffed[m.group(1) + "p"] = u
+
+        def scan(html):
+            found = {}
+            for full_url, quality in MP4_PATTERN.findall(html):
+                found[quality] = full_url.replace("&amp;", "&")
+            return found
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self.headless)
@@ -121,22 +162,56 @@ class PimpBunnyEngine:
                 page = await context.new_page()
                 page.on("request", on_request)
 
-                await page.goto(video_url, wait_until="networkidle", timeout=60000)
+                await page.goto(video_url, wait_until="domcontentloaded", timeout=60000)
+
+                qualities, content, played = {}, "", False
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < max_wait:
+                    content = (await page.content()).replace("\\/", "/")
+                    qualities = {**scan(content), **sniffed}
+                    if qualities:
+                        await page.wait_for_timeout(2000)   # let the other qualities show up too
+                        content = (await page.content()).replace("\\/", "/")
+                        qualities = {**scan(content), **sniffed}
+                        break
+                    if not played and time.monotonic() - t0 > 6:
+                        await self._try_play(page)
+                        played = True
+                    await page.wait_for_timeout(1000)
 
                 cookies = await context.cookies()
                 cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-                content = (await page.content()).replace("\\/", "/")  # unescape JSON-style \/
+
+                if not qualities:
+                    # last resort: what is the <video> element actually playing?
+                    info = await page.evaluate(
+                        "() => { const v = document.querySelector('video');"
+                        " return { h: v ? v.videoHeight : 0, src: v ? (v.currentSrc || v.src) : '',"
+                        " sources: Array.from(document.querySelectorAll('video source')).map(s => s.src) }; }")
+                    src = info.get("src") or ""
+                    if ".mp4" in src and info.get("h"):
+                        qualities[f"{info['h']}p"] = src
+
+                if not qualities:
+                    body = (await page.inner_text("body"))[:300].replace("\n", " ")
+                    print(f"  [debug] final URL : {page.url}", flush=True)
+                    print(f"  [debug] title     : {await page.title()}", flush=True)
+                    print(f"  [debug] <video>   : {await page.locator('video').count()} element(s), "
+                          f"info={info}", flush=True)
+                    print(f"  [debug] media requests seen: {len(media_seen)}", flush=True)
+                    for u in media_seen[:10]:
+                        print(f"    {self._mask(u)[:200]}", flush=True)
+                    print(f"  [debug] body start: {body}", flush=True)
+                    try:
+                        with open("pb_probe_debug.html", "w") as f:
+                            f.write(self._mask(content))
+                    except Exception:
+                        pass
             finally:
                 await browser.close()
 
-        qualities = {}
-        for full_url, quality in MP4_PATTERN.findall(content):
-            qualities[quality] = full_url.replace("&amp;", "&")
-        # Network-sniffed URLs are the most reliable, let them win
-        qualities.update(sniffed)
-
         if not qualities:
-            return {"error": "No tokenized media links found."}
+            return {"error": "No media links found on the video page (see [debug] lines)."}
 
         ordered = dict(sorted(qualities.items(), key=lambda kv: int(kv[0][:-1]), reverse=True))
         return {

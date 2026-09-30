@@ -153,7 +153,11 @@ jobs:
 
           def step_listing():
               print(f"\n=== 1. Crawl page 1: {CREATOR_URL}", flush=True)
-              videos = asyncio.run(PimpBunnyEngine(headless=True).get_creator_videos(CREATOR_URL, max_pages=1))
+              try:
+                  videos = asyncio.run(PimpBunnyEngine(headless=True).get_creator_videos(CREATOR_URL, max_pages=1))
+              except Exception as e:
+                  check("listing", False, f"{type(e).__name__}: {str(e)[:200]}")
+                  finish(1)
               report["videos_listed"] = len(videos)
               report["listing"] = videos[:10]
               print(f"\n>>> VIDEOS LISTED ON THIS PAGE: {len(videos)}", flush=True)
@@ -170,7 +174,11 @@ jobs:
               print(f"\n=== 2. Probe: {video['url']}", flush=True)
               report["selected_index"] = VIDEO_INDEX
               report["video"] = video
-              probe = asyncio.run(PimpBunnyEngine(headless=True).probe_video(video["url"]))
+              try:
+                  probe = asyncio.run(PimpBunnyEngine(headless=True).probe_video(video["url"]))
+              except Exception as e:
+                  check("probe", False, f"{type(e).__name__}: {str(e)[:200]}")
+                  finish(1)
               if "error" in probe:
                   check("probe", False, probe["error"])
                   finish(1)
@@ -284,7 +292,9 @@ jobs:
         if: ${{ always() }}
         with:
           name: pb-report
-          path: pb_report.json
+          path: |
+            pb_report.json
+            pb_probe_debug.html
           retention-days: 14
           if-no-files-found: ignore
 
