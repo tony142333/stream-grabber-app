@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PB Bulk Grabber</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { height: auto; min-height: 100vh; overflow-y: auto; }
+        .pb-wrap { max-width: 1200px; margin: 0 auto; padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; }
+        .pb-top { display: flex; justify-content: space-between; align-items: center; }
+        .pb-top h1 { font-size: 1.25rem; }
+        .pb-top a { color: var(--accent); text-decoration: none; font-size: .85rem; }
+        .pb-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; }
+        .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; }
+        .pb-card input[type=text], .pb-card select {
+            background: var(--bg-input); color: var(--text-main); border: 1px solid var(--border);
+            border-radius: 6px; padding: 9px 12px; font-size: .9rem; font-family: var(--font-sans);
+        }
+        #creatorUrl { flex: 1; min-width: 260px; }
+        .btn { background: var(--accent); color: #04121c; border: 0; border-radius: 6px; padding: 9px 16px;
+               font-weight: 600; cursor: pointer; font-size: .85rem; }
+        .btn:disabled { opacity: .45; cursor: not-allowed; }
+        .btn.ghost { background: transparent; color: var(--text-muted); border: 1px solid #334155; }
+        .muted { color: var(--text-muted); font-size: .8rem; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .75rem; margin-top: .9rem;
+                max-height: 52vh; overflow-y: auto; padding-right: 4px; }
+        .vcard { position: relative; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; cursor: pointer;
+                 background: #0a1020; }
+        .vcard.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-glow); }
+        .vcard img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background: #111a2e; }
+        .vcard .t { font-size: .75rem; padding: 6px 8px; line-height: 1.25; max-height: 3.2em; overflow: hidden; }
+        .vcard input { position: absolute; top: 8px; left: 8px; width: 18px; height: 18px; accent-color: var(--accent); }
+        .task { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+        .task:last-child { border-bottom: 0; }
+        .task .nm { font-size: .85rem; word-break: break-all; }
+        .bar { grid-column: 1 / -1; height: 6px; background: #0f172a; border-radius: 3px; overflow: hidden; }
+        .bar > div { height: 100%; width: 0%; background: var(--accent); transition: width .3s; }
+        .meta { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+        .tag { font-size: .7rem; padding: 2px 8px; border-radius: 999px; background: #1e293b; color: #cbd5e1; }
+        .tag.ok { background: rgba(16,185,129,.2); color: var(--success); }
+        .tag.bad { background: rgba(239,68,68,.2); color: var(--danger); }
+        .tag.run { background: rgba(56,189,248,.18); color: var(--accent); }
+        .tag.wait { background: rgba(245,158,11,.18); color: var(--warning); }
+        .ctl button { background: transparent; border: 1px solid #334155; color: #cbd5e1; border-radius: 4px;
+                      padding: 2px 8px; font-size: .75rem; cursor: pointer; margin-left: 4px; }
+        #msg { min-height: 1.2em; }
+        .err { color: var(--danger); }
+    </style>
+</head>
+<body>
+<div class="pb-wrap">
+    <div class="pb-top">
+        <h1>PB Bulk Grabber</h1>
+        <a href="/">&larr; Back to main console</a>
+    </div>
+
+    <!-- 1. Creator URL -->
+    <div class="pb-card">
+        <div class="row">
+            <input type="text" id="creatorUrl" placeholder="https://pimpbunny.com/onlyfans-creators/creator-name/">
+            <button class="btn" id="btnFetch" onclick="fetchCatalog()">Fetch videos</button>
+        </div>
+        <div id="msg" class="muted" style="margin-top:.6rem"></div>
+    </div>
+
+    <!-- 2. Catalog + selection -->
+    <div class="pb-card" id="catalogCard" style="display:none">
+        <div class="row" style="justify-content:space-between">
+            <div class="row">
+                <span id="countLabel" class="muted"></span>
+                <button class="btn ghost" onclick="selectAll(true)">Select all</button>
+                <button class="btn ghost" onclick="selectAll(false)">Select none</button>
+            </div>
+            <div class="row">
+                <label class="muted" for="quality">Quality</label>
+                <select id="quality">
+                    <option>2160p</option>
+                    <option>1440p</option>
+                    <option selected>1080p</option>
+                    <option>720p</option>
+                    <option>480p</option>
+                    <option>360p</option>
+                </select>
+                <button class="btn" id="btnQueue" onclick="queueSelected()" disabled>Queue 0 videos</button>
+            </div>
+        </div>
+        <div class="grid" id="grid"></div>
+    </div>
+
+    <!-- 3. Live downloads -->
+    <div class="pb-card" id="tasksCard" style="display:none">
+        <div class="row" style="justify-content:space-between">
+            <strong style="font-size:.95rem">Downloads</strong>
+            <button class="btn ghost" onclick="clearDone()">Clear finished</button>
+        </div>
+        <div id="tasks"></div>
+    </div>
+</div>
+
+<script>
+    let videos = [];                 // [{url,title,thumb}]
+    const selected = new Set();      // urls
+    const tasks = {};                // id -> {el, nameEl, tagEl, barEl, pctEl, spdEl, ctlEl, state}
+    const earlyEvents = {};          // events that arrived before the queue response created the row
+
+    const $ = id => document.getElementById(id);
+    const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    function say(text, isErr = false) {
+        const m = $('msg');
+        m.textContent = text;
+        m.className = isErr ? 'err' : 'muted';
+    }
+
+    /* ---------- Catalog ---------- */
+    async function fetchCatalog() {
+        const url = $('creatorUrl').value.trim();
+        if (!url) return say('Paste a creator URL first.', true);
+
+        $('btnFetch').disabled = true;
+        say('Crawling pages... this can take a minute for big profiles.');
+        try {
+            const res = await fetch('/api/pb/catalog', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ creator_url: url })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || res.statusText);
+
+            videos = data.videos;
+            selected.clear();
+            videos.forEach(v => selected.add(v.url));   // preselect everything
+            renderGrid();
+            $('catalogCard').style.display = 'block';
+            say(videos.length ? `Found ${videos.length} videos.` : 'No videos found (selectors may need tuning).', !videos.length);
+        } catch (e) {
+            say('Fetch failed: ' + e.message, true);
+        } finally {
+            $('btnFetch').disabled = false;
+        }
+    }
+
+    function renderGrid() {
+        $('grid').innerHTML = videos.map((v, i) => `
+            <div class="vcard ${selected.has(v.url) ? 'sel' : ''}" onclick="toggle(${i})">
+                <input type="checkbox" ${selected.has(v.url) ? 'checked' : ''} onclick="event.stopPropagation(); toggle(${i})">
+                ${v.thumb ? `<img src="${esc(v.thumb)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : '<img alt="">'}
+                <div class="t">${esc(v.title || v.url.split('/').filter(Boolean).pop())}</div>
+            </div>`).join('');
+        updateCount();
+    }
+
+    function toggle(i) {
+        const u = videos[i].url;
+        selected.has(u) ? selected.delete(u) : selected.add(u);
+        renderGrid();
+    }
+
+    function selectAll(on) {
+        selected.clear();
+        if (on) videos.forEach(v => selected.add(v.url));
+        renderGrid();
+    }
+
+    function updateCount() {
+        $('countLabel').textContent = `${selected.size} of ${videos.length} selected`;
+        const b = $('btnQueue');
+        b.textContent = `Queue ${selected.size} video${selected.size === 1 ? '' : 's'}`;
+        b.disabled = selected.size === 0;
+    }
+
+    /* ---------- Queue ---------- */
+    async function queueSelected() {
+        const urls = videos.filter(v => selected.has(v.url)).map(v => v.url);
+        if (!urls.length) return;
+
+        $('btnQueue').disabled = true;
+        try {
+            const res = await fetch('/api/pb/queue', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ video_urls: urls, quality: $('quality').value })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || res.statusText);
+
+            $('tasksCard').style.display = 'block';
+            data.tasks.forEach(t => {
+                const title = (videos.find(v => v.url === t.url) || {}).title;
+                createTask(t.id, title || t.url.split('/').filter(Boolean).pop());
+                if (earlyEvents[t.id]) { earlyEvents[t.id].forEach(handleEvent); delete earlyEvents[t.id]; }
+            });
+            say(`Queued ${data.tasks.length} videos at ${data.quality}.`);
+        } catch (e) {
+            say('Queue failed: ' + e.message, true);
+        } finally {
+            updateCount();
+        }
+    }
+
+    /* ---------- Task rows ---------- */
+    function createTask(id, name) {
+        const el = document.createElement('div');
+        el.className = 'task';
+        el.innerHTML = `
+            <div class="nm"></div>
+            <span class="tag wait">Queued</span>
+            <div class="bar"><div></div></div>
+            <div class="meta">
+                <span class="muted"><span class="pct">0%</span> &nbsp; <span class="spd"></span></span>
+                <span class="ctl"></span>
+            </div>`;
+        el.querySelector('.nm').textContent = name;
+        $('tasks').prepend(el);
+        tasks[id] = {
+            el, state: 'QUEUED',
+            nameEl: el.querySelector('.nm'), tagEl: el.querySelector('.tag'),
+            barEl: el.querySelector('.bar > div'), pctEl: el.querySelector('.pct'),
+            spdEl: el.querySelector('.spd'), ctlEl: el.querySelector('.ctl')
+        };
+    }
+
+    const STATE_UI = {
+        QUEUED:      ['Queued', 'wait'],
+        SEARCHING:   ['Probing', 'run'],
+        FOUND:       ['Found', 'run'],
+        DOWNLOADING: ['Downloading', 'run'],
+        PAUSED:      ['Paused', 'wait'],
+        COMPLETED:   ['Done', 'ok'],
+        STOPPED:     ['Stopped', 'bad'],
+        FAILED:      ['Failed', 'bad']
+    };
+
+    function setState(id, state, msg) {
+        const t = tasks[id];
+        if (!t) return;
+        t.state = state;
+        const [label, cls] = STATE_UI[state] || [state, ''];
+        t.tagEl.textContent = label;
+        t.tagEl.className = 'tag ' + cls;
+        t.tagEl.title = msg || '';
+
+        if (state === 'COMPLETED') { t.barEl.style.width = '100%'; t.pctEl.textContent = '100%'; t.spdEl.textContent = ''; }
+        if (state === 'FAILED' && msg) t.spdEl.textContent = msg.slice(0, 90);
+
+        if (state === 'DOWNLOADING') t.ctlEl.innerHTML =
+            `<button onclick="act('${id}','pause')">Pause</button><button onclick="act('${id}','stop')">Stop</button>`;
+        else if (state === 'PAUSED') t.ctlEl.innerHTML =
+            `<button onclick="act('${id}','resume')">Resume</button><button onclick="act('${id}','stop')">Stop</button>`;
+        else t.ctlEl.innerHTML = '';
+    }
+
+    async function act(id, action) {
+        try { await fetch(`/api/task/${id}/${action}`, { method: 'POST' }); } catch (e) {}
+    }
+
+    function clearDone() {
+        Object.entries(tasks).forEach(([id, t]) => {
+            if (['COMPLETED', 'FAILED', 'STOPPED'].includes(t.state)) { t.el.remove(); delete tasks[id]; }
+        });
+    }
+
+    /* ---------- Live events (SSE from /api/logs) ---------- */
+    function handleEvent(line) {
+        // STATUS:<id>:<STATE>:<message>   PROGRESS:<id>:<aria2 line>   FILENAME:<id>:<name>
+        const kind = line.split(':', 1)[0];
+        if (!['STATUS', 'PROGRESS', 'FILENAME'].includes(kind)) return;
+
+        const rest = line.slice(kind.length + 1);
+        const i = rest.indexOf(':');
+        const id = rest.slice(0, i);
+        const payload = rest.slice(i + 1);
+
+        if (!tasks[id]) {                       // row not created yet? keep briefly
+            if (kind === 'STATUS') {            // only buffer status changes, cap per id
+                const buf = (earlyEvents[id] = earlyEvents[id] || []);
+                buf.push(line);
+                if (buf.length > 5) buf.shift();
+            }
+            return;
+        }
+        const t = tasks[id];
+
+        if (kind === 'STATUS') {
+            const j = payload.indexOf(':');
+            setState(id, j === -1 ? payload : payload.slice(0, j), j === -1 ? '' : payload.slice(j + 1));
+        } else if (kind === 'FILENAME') {
+            t.nameEl.textContent = payload;
+        } else if (kind === 'PROGRESS') {
+            const pct = payload.match(/\((\d+)%\)/);
+            const dl = payload.match(/DL:(\S+?)[\s\]]/);
+            if (pct) { t.barEl.style.width = pct[1] + '%'; t.pctEl.textContent = pct[1] + '%'; }
+            if (dl) t.spdEl.textContent = dl[1] + '/s';
+        }
+    }
+
+    function connectLogs() {
+        const es = new EventSource('/api/logs');
+        es.onmessage = e => handleEvent(e.data);
+        es.onerror = () => { es.close(); setTimeout(connectLogs, 2000); };
+    }
+    connectLogs();
+
+    $('creatorUrl').addEventListener('keydown', e => { if (e.key === 'Enter') fetchCatalog(); });
+</script>
+</body>
+</html>

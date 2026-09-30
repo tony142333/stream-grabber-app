@@ -1,0 +1,298 @@
+name: PB Single Page Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      creator_url:
+        description: "Creator page to crawl (page 1 only)"
+        required: true
+        default: "https://pimpbunny.com/onlyfans-creators/jak-knife/"
+      video_index:
+        description: "Which listed video to download (0 = first)"
+        required: true
+        default: "0"
+      quality:
+        description: "Quality to download and verify"
+        required: true
+        default: "1080p"
+      upload_video:
+        description: "Also attach the downloaded video as an artifact"
+        type: boolean
+        default: false
+  push:
+    branches: [ "feature/sub-site-pipeline" ]
+    paths:
+      - "engines/**"
+      - "downloader.py"
+      - ".github/workflows/pb-test.yml"
+
+jobs:
+  pb-single-page:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PB_CREATOR_URL: ${{ github.event.inputs.creator_url || 'https://pimpbunny.com/onlyfans-creators/jak-knife/' }}
+      PB_VIDEO_INDEX: ${{ github.event.inputs.video_index || '0' }}
+      PB_QUALITY: ${{ github.event.inputs.quality || '1080p' }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies, FFmpeg & aria2
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt requests
+          python -m playwright install --with-deps chromium
+          sudo apt-get update && sudo apt-get install -y ffmpeg aria2
+
+      - name: Crawl, select, download and verify (PB pipeline)
+        run: |
+          cat << 'EOF' > pb_verify.py
+          """
+          PB pipeline end-to-end check (single creator page).
+
+          1. Crawl page 1 of a creator URL   -> report how many videos were listed
+          2. Select one video (by index)     -> probe it, list the qualities found
+          3. Download the wanted quality     -> using the project's real downloader.py
+          4. Verify the file with ffprobe    -> resolution, duration, codec, size, sha256
+
+          Config via env vars:  PB_CREATOR_URL  PB_VIDEO_INDEX  PB_QUALITY
+          Writes pb_report.json and (on GitHub Actions) a table in the job summary.
+          """
+          import asyncio
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import time
+
+          import requests
+
+          ROOT = os.path.dirname(os.path.abspath(__file__))
+          sys.path.insert(0, ROOT)
+          from engines.pimpbunny_engine import PimpBunnyEngine  # noqa: E402
+
+          CREATOR_URL = os.environ.get("PB_CREATOR_URL", "https://pimpbunny.com/onlyfans-creators/jak-knife/")
+          VIDEO_INDEX = int(os.environ.get("PB_VIDEO_INDEX", "0") or 0)
+          QUALITY = os.environ.get("PB_QUALITY", "1080p")
+          DOWNLOAD_DIR = os.path.expanduser("~/downloads")
+          DOWNLOAD_TIMEOUT = int(os.environ.get("PB_DOWNLOAD_TIMEOUT", "1800"))
+
+          report = {"creator_url": CREATOR_URL, "requested_quality": QUALITY, "checks": {}}
+
+
+          def mask(url: str) -> str:
+              """Never print live tokens into (possibly public) CI logs."""
+              return re.sub(r"(v-acctoken=)[^&\s]+", r"\1***", url)
+
+
+          def check(name: str, ok: bool, detail: str = ""):
+              report["checks"][name] = {"ok": bool(ok), "detail": detail}
+              print(f"[{'PASS' if ok else 'FAIL'}] {name}" + (f" - {detail}" if detail else ""), flush=True)
+              return ok
+
+
+          def finish(code: int):
+              report["passed"] = code == 0
+              with open("pb_report.json", "w") as f:
+                  json.dump(report, f, indent=2)
+              write_summary()
+              sys.exit(code)
+
+
+          def fmt_mb(n):
+              return f"{n / 1024 / 1024:.2f} MB" if n else "n/a"
+
+
+          def write_summary():
+              path = os.environ.get("GITHUB_STEP_SUMMARY")
+              if not path:
+                  return
+              r = report
+              v = r.get("video", {})
+              m = r.get("media", {})
+              rows = [
+                  ("Overall", "PASSED" if r.get("passed") else "FAILED"),
+                  ("Creator page", r["creator_url"]),
+                  ("Videos listed on page 1", r.get("videos_listed", "n/a")),
+                  ("Selected index", r.get("selected_index", "n/a")),
+                  ("Selected video", v.get("url", "n/a")),
+                  ("Qualities found", ", ".join(r.get("available_qualities", [])) or "n/a"),
+                  ("Requested quality", r["requested_quality"]),
+                  ("Expected size (Content-Length)", f"{fmt_mb(r.get('expected_bytes'))} ({r.get('expected_bytes', 'n/a')} bytes)"),
+                  ("Downloaded size", f"{fmt_mb(m.get('size_bytes'))} ({m.get('size_bytes', 'n/a')} bytes)"),
+                  ("Resolution (WxH)", f"{m.get('width', '?')}x{m.get('height', '?')}"),
+                  ("Codec", m.get("codec", "n/a")),
+                  ("Duration", f"{m.get('duration_s', 'n/a')} s"),
+                  ("File name", m.get("file", "n/a")),
+                  ("SHA-256", m.get("sha256", "n/a")),
+              ]
+              with open(path, "a") as f:
+                  f.write("## PB single-page pipeline test\n\n| Item | Value |\n|---|---|\n")
+                  for k, val in rows:
+                      f.write(f"| {k} | {val} |\n")
+                  f.write("\n### Checks\n\n")
+                  for name, c in r["checks"].items():
+                      f.write(f"- {'✅' if c['ok'] else '❌'} **{name}** {c['detail']}\n")
+                  if r.get("listing"):
+                      f.write("\n<details><summary>First videos on the page</summary>\n\n")
+                      for i, it in enumerate(r["listing"]):
+                          f.write(f"{i}. {it['title'] or '(no title)'} - {it['url']}\n")
+                      f.write("\n</details>\n")
+                  f.write("\n**Cross-check on your PC:** open the selected video URL, download the same quality, "
+                          "then compare the size in bytes, the resolution (`ffprobe` or file properties) and the SHA-256 "
+                          "above. Sizes may differ slightly if the site serves different encodes per request.\n")
+
+
+          def step_listing():
+              print(f"\n=== 1. Crawl page 1: {CREATOR_URL}", flush=True)
+              videos = asyncio.run(PimpBunnyEngine(headless=True).get_creator_videos(CREATOR_URL, max_pages=1))
+              report["videos_listed"] = len(videos)
+              report["listing"] = videos[:10]
+              print(f"\n>>> VIDEOS LISTED ON THIS PAGE: {len(videos)}", flush=True)
+              for i, v in enumerate(videos[:10]):
+                  print(f"  [{i}] {v['title'] or '(no title)'} -> {v['url']}", flush=True)
+              if not check("listing", len(videos) > 0, f"{len(videos)} videos found"):
+                  finish(1)
+              if not check("index in range", 0 <= VIDEO_INDEX < len(videos), f"index {VIDEO_INDEX} of {len(videos)}"):
+                  finish(1)
+              return videos
+
+
+          def step_probe(video):
+              print(f"\n=== 2. Probe: {video['url']}", flush=True)
+              report["selected_index"] = VIDEO_INDEX
+              report["video"] = video
+              probe = asyncio.run(PimpBunnyEngine(headless=True).probe_video(video["url"]))
+              if "error" in probe:
+                  check("probe", False, probe["error"])
+                  finish(1)
+              report["available_qualities"] = probe["available_qualities"]
+              for q, u in probe["streams"].items():
+                  print(f"  {q}: {mask(u)}", flush=True)
+              check("probe", True, "qualities: " + ", ".join(probe["available_qualities"]))
+              if not check(f"{QUALITY} available", QUALITY in probe["streams"], f"have {probe['available_qualities']}"):
+                  finish(1)
+              return probe
+
+
+          def expected_size(url, referer, cookies):
+              try:
+                  with requests.get(url, headers={"Referer": referer, "Cookie": cookies}, stream=True, timeout=30) as r:
+                      r.raise_for_status()
+                      return int(r.headers.get("Content-Length", 0))
+              except Exception as e:
+                  print(f"  could not read Content-Length: {e}", flush=True)
+                  return 0
+
+
+          def step_download(video, probe):
+              stream = probe["streams"][QUALITY]
+              size = expected_size(stream, probe["referer"], probe["cookies"])
+              report["expected_bytes"] = size
+              print(f"\n=== 3. Download {QUALITY} (expected {fmt_mb(size)})", flush=True)
+
+              name = re.sub(r"[^A-Za-z0-9._-]+", "_", video["url"].rstrip("/").split("/")[-1])[:100] + f"_{QUALITY}.mp4"
+              target = os.path.join(DOWNLOAD_DIR, name)
+              for p in (target, target + ".aria2"):
+                  if os.path.exists(p):
+                      os.remove(p)
+
+              t0 = time.time()
+              try:
+                  proc = subprocess.run(
+                      [sys.executable, os.path.join(ROOT, "downloader.py"), stream, name, probe["referer"], probe["cookies"]],
+                      text=True, capture_output=True, timeout=DOWNLOAD_TIMEOUT,
+                  )
+              except subprocess.TimeoutExpired:
+                  check("download", False, f"timed out after {DOWNLOAD_TIMEOUT}s")
+                  finish(1)
+              tail = "\n".join(mask(proc.stdout).strip().splitlines()[-6:])
+              print(tail, flush=True)
+              ok = proc.returncode == 0 and os.path.isfile(target)
+              check("download", ok, f"exit {proc.returncode}, {time.time() - t0:.0f}s")
+              if not ok:
+                  finish(1)
+              return target
+
+
+          def step_verify(path):
+              print("\n=== 4. Verify file", flush=True)
+              size = os.path.getsize(path)
+              out = subprocess.run(
+                  ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                   "-show_entries", "stream=codec_name,width,height:format=duration",
+                   "-of", "json", path],
+                  text=True, capture_output=True,
+              )
+              if out.returncode != 0:
+                  check("ffprobe", False, out.stderr.strip()[:200])
+                  finish(1)
+              info = json.loads(out.stdout)
+              st = info["streams"][0]
+              sha = hashlib.sha256()
+              with open(path, "rb") as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b""):
+                      sha.update(chunk)
+
+              report["media"] = {
+                  "file": os.path.basename(path),
+                  "size_bytes": size,
+                  "width": st["width"],
+                  "height": st["height"],
+                  "codec": st.get("codec_name"),
+                  "duration_s": round(float(info["format"].get("duration", 0)), 2),
+                  "sha256": sha.hexdigest(),
+              }
+              m = report["media"]
+              print(f"  size       : {size} bytes ({fmt_mb(size)})\n  resolution : {m['width']}x{m['height']}\n"
+                    f"  codec      : {m['codec']}\n  duration   : {m['duration_s']} s\n  sha256     : {m['sha256']}", flush=True)
+
+              want = int(QUALITY.rstrip("p"))
+              check("resolution matches quality", want in (m["height"], m["width"]),
+                    f"wanted {QUALITY}, got {m['width']}x{m['height']}")
+              check("duration > 0", m["duration_s"] > 0, f"{m['duration_s']} s")
+              exp = report.get("expected_bytes", 0)
+              if exp:
+                  check("size matches Content-Length", size == exp, f"{size} vs {exp} bytes")
+              else:
+                  check("file not empty", size > 1024 * 1024, fmt_mb(size))
+
+
+          if __name__ == "__main__":
+              vids = step_listing()
+              chosen = vids[VIDEO_INDEX]
+              pr = step_probe(chosen)
+              file_path = step_download(chosen, pr)
+              step_verify(file_path)
+              failed = [n for n, c in report["checks"].items() if not c["ok"]]
+              print("\nRESULT:", "ALL CHECKS PASSED" if not failed else f"FAILED: {failed}", flush=True)
+              finish(1 if failed else 0)
+          EOF
+
+          python pb_verify.py
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: pb-report
+          path: pb_report.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload downloaded video (optional)
+        uses: actions/upload-artifact@v4
+        if: ${{ github.event.inputs.upload_video == 'true' }}
+        with:
+          name: pb-video
+          path: ~/downloads/*.mp4
+          retention-days: 3
+          if-no-files-found: ignore

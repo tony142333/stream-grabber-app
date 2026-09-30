@@ -1,123 +1,132 @@
 import asyncio
-import re
 import json
+import re
 from playwright.async_api import async_playwright
+
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+
+# Direct tokenized mp4 links, e.g. https://site/get_file/.../123_1080p.mp4/?v-acctoken=XXX&rnd=123
+# page.content() returns attributes HTML-escaped, so "&" may show up as "&amp;".
+MP4_PATTERN = re.compile(
+    r'(https?://[^\s"\'<>\\]+?_(\d{3,4}p)\.mp4/?\?[^\s"\'<>\\]*?v-acctoken=[^\s"\'<>\\&]+'
+    r'(?:(?:&amp;|&)[^\s"\'<>\\]*)?)'
+)
+# Video pages look like /the-nanny-s-secret_v1/ or end in .html or contain /video/
+VIDEO_HREF = re.compile(r'(/video/|\.html$|_v\d+/?$)')
+
+LINK_JS = """
+() => Array.from(document.querySelectorAll(
+    '.video-list-item a, .item-video a, .list-videos a, .item a'
+)).map(a => {
+    const img = a.querySelector('img');
+    return {
+        url: a.href,
+        title: (a.getAttribute('title') || (img && img.alt) || a.textContent || '').trim(),
+        thumb: img ? (img.dataset.original || img.dataset.src || img.src || '') : ''
+    };
+})
+"""
+
 
 class PimpBunnyEngine:
     def __init__(self, headless=True):
         self.headless = headless
 
-    async def get_creator_videos(self, creator_url):
+    async def get_creator_videos(self, creator_url, max_pages=50):
         """
-        Scrapes a creator's profile across all pages and returns a list of video URLs.
-        Example: https://pimpbunny.com/onlyfans-creators/jak-knife/
+        Crawl a creator page and all its pagination.
+        Returns list of {"url", "title", "thumb"} (deduplicated, order preserved).
         """
-        video_links = []
-        page_num = 1
-
-        # Ensure base URL is clean for pagination
         base_url = creator_url.split('?')[0].rstrip('/')
-
-        print(f"Starting bulk scrape for: {base_url}")
+        seen = {}
+        print(f"Starting bulk scrape for: {base_url}", flush=True)
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self.headless)
-            context = await browser.new_context()
+            context = await browser.new_context(user_agent=UA)
             page = await context.new_page()
+            try:
+                for page_num in range(1, max_pages + 1):
+                    # Keep the same sort on every page so pagination is consistent
+                    target = f"{base_url}/?sort_by=rating" if page_num == 1 \
+                        else f"{base_url}/{page_num}/?sort_by=rating"
+                    print(f"Scraping page {page_num}...", flush=True)
 
-            while True:
-                # Construct pagination URL (Page 1 has no number, Page 2+ does)
-                if page_num == 1:
-                    target_url = f"{base_url}/"
-                else:
-                    target_url = f"{base_url}/{page_num}/?sort_by=rating"
+                    response = await page.goto(target, wait_until="domcontentloaded")
+                    if response is None or response.status >= 400:
+                        print("Reached end of pagination (HTTP error).", flush=True)
+                        break
 
-                print(f"Scraping page {page_num}...")
-                response = await page.goto(target_url, wait_until="domcontentloaded")
+                    items = await page.evaluate(LINK_JS)
+                    new_on_page = 0
+                    for it in items:
+                        href = it["url"].split('#')[0]
+                        if not VIDEO_HREF.search(href):
+                            continue
+                        if href not in seen:
+                            it["url"] = href
+                            seen[href] = it
+                            new_on_page += 1
 
-                # If page 404s or redirects away, we've hit the end
-                if response.status == 404:
-                    print("Reached end of pagination.")
-                    break
+                    # Out-of-range pages sometimes re-serve the last page instead of 404
+                    if new_on_page == 0:
+                        print("No new videos on this page. Stopping.", flush=True)
+                        break
+            finally:
+                await browser.close()
 
-                # Update this selector based on PB's actual video grid HTML
-                # Looking for standard anchor tags wrapping video thumbnails
-                hrefs = await page.evaluate(
-                    "Array.from(document.querySelectorAll('.video-list-item a, .item-video a')).map(a => a.href)"
-                )
-
-                # Filter out non-video links (like profile links or ads)
-                valid_videos = [href for href in hrefs if "/video/" in href or ".html" in href]
-
-                if not valid_videos:
-                    print("No more videos found on this page. Exiting loop.")
-                    break
-
-                video_links.extend(valid_videos)
-                page_num += 1
-
-            await browser.close()
-
-        # Deduplicate while preserving order
-        unique_links = list(dict.fromkeys(video_links))
-        print(f"Total unique videos found: {len(unique_links)}")
-        return unique_links
+        videos = list(seen.values())
+        print(f"Total unique videos found: {len(videos)}", flush=True)
+        return videos
 
     async def probe_video(self, video_url):
         """
-        Visits a specific video URL and extracts all available qualities and their tokenized direct links.
-        Returns a dictionary compatible with your existing downloader.
+        Open one video page, return tokenized direct links per quality plus
+        cookies + referer for the downloader.
         """
-        print(f"Probing video: {video_url}")
+        print(f"Probing video: {video_url}", flush=True)
+        sniffed = {}  # quality -> url captured from real network requests
+
+        def on_request(req):
+            m = re.search(r'_(\d{3,4}p)\.mp4', req.url)
+            if m and "v-acctoken" in req.url:
+                sniffed[m.group(1)] = req.url
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self.headless)
-            context = await browser.new_context()
-            page = await context.new_page()
+            try:
+                context = await browser.new_context(user_agent=UA)
+                page = await context.new_page()
+                page.on("request", on_request)
 
-            await page.goto(video_url, wait_until="networkidle")
+                await page.goto(video_url, wait_until="networkidle", timeout=60000)
 
-            # 1. Grab cookies for the downloader
-            cookies = await context.cookies()
-            cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                cookies = await context.cookies()
+                cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+                content = (await page.content()).replace("\\/", "/")  # unescape JSON-style \/
+            finally:
+                await browser.close()
 
-            # 2. Extract page HTML to find the tokenized media links
-            content = await page.content()
+        qualities = {}
+        for full_url, quality in MP4_PATTERN.findall(content):
+            qualities[quality] = full_url.replace("&amp;", "&")
+        # Network-sniffed URLs are the most reliable, let them win
+        qualities.update(sniffed)
 
-            # Regex to find the direct mp4 links.
-            # Matches: https://pimpbunny.com/get_file/.../12345_1080p.mp4/?v-acctoken=...&rnd=...
-            # Groups the quality (e.g., '1080p') to map it dynamically.
-            pattern = r'(https?://[^\s"\'<>]+_(\d{3,4}p)\.mp4/\?v-acctoken=[^\s"\'<>&]+(?:&|&)rnd=\d+)'
-            matches = re.findall(pattern, content)
+        if not qualities:
+            return {"error": "No tokenized media links found."}
 
-            qualities_dict = {}
-            for full_url, quality in matches:
-                # Clean up HTML escaped ampersands
-                clean_url = full_url.replace("&", "&")
-                qualities_dict[quality] = clean_url
+        ordered = dict(sorted(qualities.items(), key=lambda kv: int(kv[0][:-1]), reverse=True))
+        return {
+            "referer": video_url,
+            "cookies": cookie_str,
+            "streams": ordered,
+            "available_qualities": list(ordered.keys()),  # highest first
+        }
 
-            await browser.close()
 
-            # 3. Format output similarly to your existing PROBE_DATA
-            if not qualities_dict:
-                return {"error": "No tokenized media links found."}
-
-            probe_data = {
-                "referer": video_url,
-                "cookies": cookie_str,
-                "streams": qualities_dict,
-                "available_qualities": list(qualities_dict.keys())
-            }
-
-            return probe_data
-
-# Standalone execution for testing in terminal
 if __name__ == "__main__":
     engine = PimpBunnyEngine(headless=True)
-
-    # Example: Run the prober directly
-    test_url = "https://pimpbunny.com/the-nanny-s-secret_v1/" # Replace with valid PB link
-    result = asyncio.run(engine.probe_video(test_url))
-
-    print("\n--- PROBE DATA ---")
-    print(json.dumps(result, indent=4))
+    test_url = "https://pimpbunny.com/the-nanny-s-secret_v1/"
+    print(json.dumps(asyncio.run(engine.probe_video(test_url)), indent=4))

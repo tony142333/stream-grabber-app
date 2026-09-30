@@ -21,20 +21,23 @@ import uvicorn
 from modules.config_manager.config_core import config_router, CONFIG_DIR
 
 # 1. Import the PB Engine
-from pimpbunny_engine import PimpBunnyEngine
+from engines.pimpbunny_engine import PimpBunnyEngine
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOADS_PATH = os.path.expanduser("~/downloads")
 
-log_queue = None
+log_subscribers: set = set()   # one asyncio.Queue per open /api/logs connection
 main_loop = None
+PB_MAX_PARALLEL = 2            # simultaneous PB probe+download jobs
+pb_semaphore = None
+pb_jobs: set = set()           # strong refs so background tasks aren't garbage-collected
 active_tasks = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global log_queue, main_loop
-    log_queue = asyncio.Queue()
+    global main_loop, pb_semaphore
     main_loop = asyncio.get_running_loop()
+    pb_semaphore = asyncio.Semaphore(PB_MAX_PARALLEL)
     os.makedirs(DOWNLOADS_PATH, exist_ok=True)
     yield
 
@@ -69,9 +72,14 @@ ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE.sub('', text)
 
+def _broadcast(msg: str):
+    for q in list(log_subscribers):
+        q.put_nowait(msg)
+
 def push_log_sync(msg: str):
-    if main_loop and log_queue:
-        asyncio.run_coroutine_threadsafe(log_queue.put(msg), main_loop)
+    """Thread-safe: callable from worker threads or from the event loop."""
+    if main_loop:
+        main_loop.call_soon_threadsafe(_broadcast, msg)
 
 def stream_process_worker(task_id: str, target_url: str):
     python_bin = sys.executable
@@ -380,66 +388,92 @@ async def preview_completed_stream(filename: str, request: Request):
 @app.get("/api/logs")
 async def stream_logs():
     async def event_generator():
-        while True:
-            if log_queue:
-                msg = await log_queue.get()
+        q = asyncio.Queue()
+        log_subscribers.add(q)
+        try:
+            while True:
+                msg = await q.get()
                 yield f"data: {msg}\n\n"
-            else:
-                await asyncio.sleep(0.1)
+        finally:
+            log_subscribers.discard(q)
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # ----------------- PB Bulk Scraper Endpoints ----------------- #
+def pick_quality(requested: str, available: list[str]):
+    """Exact match, else best quality below the request, else lowest above it."""
+    if requested in available:
+        return requested
+    want = int(requested.rstrip("p") or 0)
+    nums = sorted(int(q.rstrip("p")) for q in available)
+    below = [n for n in nums if n <= want]
+    chosen = below[-1] if below else (nums[0] if nums else None)
+    return f"{chosen}p" if chosen else None
+
+def make_filename(url: str, quality: str, task_id: str) -> str:
+    slug = url.rstrip("/").split("/")[-1] or f"pb_{task_id}"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", slug).strip("_")[:120]
+    name = f"{slug}_{quality}.mp4"
+    if os.path.exists(os.path.join(DOWNLOADS_PATH, name)):
+        name = f"{slug}_{quality}_{task_id}.mp4"
+    return name
+
 @app.post("/api/pb/catalog")
 async def get_catalog(payload: CatalogRequest):
-    """Crawl paginated creator pages and return a list of video links."""
-    urls = await pb_engine.get_creator_videos(payload.creator_url)
-    return {"status": "success", "count": len(urls), "videos": urls}
+    """Crawl paginated creator pages and return [{url,title,thumb}, ...]."""
+    try:
+        videos = await pb_engine.get_creator_videos(payload.creator_url)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Scrape failed: {e}")
+    return {"status": "success", "count": len(videos), "videos": videos}
 
-async def process_batch_job(video_urls: list[str], quality: str):
-    """Background worker to probe each selected video and dispatch to existing download worker."""
+async def process_one_video(task_id: str, url: str, quality: str):
+    """Probe one video, then run the existing download worker. Limited by pb_semaphore."""
     loop = asyncio.get_running_loop()
+    async with pb_semaphore:
+        try:
+            push_log_sync(f"STATUS:{task_id}:SEARCHING:Probing video page...")
+            push_log_sync(f"[{task_id}] [PB] Probing: {url}")
+            probe = await pb_engine.probe_video(url)
 
-    for url in video_urls:
-        push_log_sync(f"[PB Worker] Probing: {url}")
-        probe_data = await pb_engine.probe_video(url)
+            if "error" in probe:
+                push_log_sync(f"STATUS:{task_id}:FAILED:{probe['error']}")
+                return
 
-        target_stream = probe_data.get("streams", {}).get(quality)
-        if not target_stream:
-            available = probe_data.get("available_qualities", [])
-            if available:
-                fallback_quality = available[0]
-                target_stream = probe_data.get("streams", {}).get(fallback_quality)
-                push_log_sync(f"[PB Worker] {quality} not found for {url}. Falling back to {fallback_quality}.")
+            chosen = pick_quality(quality, probe["available_qualities"])
+            if not chosen:
+                push_log_sync(f"STATUS:{task_id}:FAILED:No qualities found")
+                return
+            if chosen != quality:
+                push_log_sync(f"[{task_id}] [PB] {quality} unavailable, using {chosen}")
 
-        if target_stream:
-            push_log_sync(f"[PB Worker] Ready to download: {target_stream}")
-
-            # Generate a new task ID and filename for your existing download loop
-            t_id = uuid.uuid4().hex[:6]
-            # Use the last part of the URL as a clean filename, or default to a timestamp
-            safe_name = url.strip('/').split('/')[-1] if url else f"pb_batch_{t_id}"
-            output_filename = f"{safe_name}_{quality}.mp4"
-
-            # Dispatch to your exact existing download worker
-            loop.run_in_executor(
+            filename = make_filename(url, chosen, task_id)
+            push_log_sync(f"STATUS:{task_id}:FOUND:Stream found at {chosen}")
+            # download_process_worker emits FILENAME/STATUS/PROGRESS with this same task_id.
+            # Awaiting it keeps the semaphore held until the file is finished.
+            await loop.run_in_executor(
                 None, download_process_worker,
-                t_id, target_stream, output_filename,
-                probe_data.get("referer", ""), probe_data.get("cookies", "")
+                task_id, probe["streams"][chosen], filename,
+                probe.get("referer", url), probe.get("cookies", "")
             )
-        else:
-            push_log_sync(f"[PB Worker] Failed to extract any stream for {url}")
+        except Exception as e:
+            push_log_sync(f"STATUS:{task_id}:FAILED:{type(e).__name__}: {e}")
 
 @app.post("/api/pb/queue")
-async def queue_batch(payload: BatchDownloadRequest, background_tasks: BackgroundTasks):
-    """Enqueues selected videos for asynchronous processing."""
+async def queue_batch(payload: BatchDownloadRequest):
+    """Create task IDs up front (so the UI can track them), then process in the background."""
     if not payload.video_urls:
-        return {"status": "error", "message": "No videos selected."}
+        raise HTTPException(status_code=400, detail="No videos selected.")
 
-    background_tasks.add_task(process_batch_job, payload.video_urls, payload.quality)
-    return {
-        "status": "queued",
-        "message": f"Added {len(payload.video_urls)} videos to the queue at {payload.quality}."
-    }
+    tasks = []
+    for url in payload.video_urls:
+        t_id = uuid.uuid4().hex[:6]
+        tasks.append({"id": t_id, "url": url})
+        push_log_sync(f"STATUS:{t_id}:QUEUED:Waiting for a free slot")
+        job = asyncio.create_task(process_one_video(t_id, url, payload.quality))
+        pb_jobs.add(job)
+        job.add_done_callback(pb_jobs.discard)
+
+    return {"status": "queued", "quality": payload.quality, "tasks": tasks}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8085)
