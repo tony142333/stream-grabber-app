@@ -44,7 +44,8 @@ class PimpBunnyEngine:
 
     async def get_creator_videos(self, creator_url, max_pages=50):
         """
-        Crawl a creator page and all its pagination.
+        Crawl only the provided creator page.
+        Does not follow pagination.
         Returns list of {"url", "title", "thumb"} (deduplicated, order preserved).
         """
         base_url = creator_url.split('?')[0].rstrip('/')
@@ -56,45 +57,29 @@ class PimpBunnyEngine:
             context = await browser.new_context(user_agent=UA)
             page = await context.new_page()
             try:
-                for page_num in range(1, max_pages + 1):
-                    # Keep the same sort on every page so pagination is consistent
-                    target = f"{base_url}/" if page_num == 1 \
-                        else f"{base_url}/{page_num}/?sort_by=rating"
-                    print(f"Scraping page {page_num}...", flush=True)
+                target = f"{base_url}/"
+                print(f"Scraping page: {target}", flush=True)
 
-                    response = await page.goto(target, wait_until="domcontentloaded")
-                    if response is None or response.status >= 400:
-                        print("Reached end of pagination (HTTP error).", flush=True)
-                        break
+                response = await page.goto(target, wait_until="domcontentloaded")
+                if response is None or response.status >= 400:
+                    print("Failed to load page.", flush=True)
+                    return []
 
-                    # cards may be rendered client-side; give them a moment to appear
-                    try:
-                        await page.wait_for_selector('a[href*="/videos/"]', timeout=15000)
-                    except Exception:
-                        pass
+                # cards may be rendered client-side; give them a moment to appear
+                try:
+                    await page.wait_for_selector('a[href*="/videos/"]', timeout=15000)
+                except Exception:
+                    pass
 
-                    items = await page.evaluate(LINK_JS)
-                    new_on_page = 0
-                    for it in items:
-                        href = it["url"].split('#')[0]
-                        if not VIDEO_HREF.search(href):
-                            continue
-                        if href not in seen:
-                            it["url"] = href
-                            seen[href] = it
-                            new_on_page += 1
+                items = await page.evaluate(LINK_JS)
+                for it in items:
+                    href = it["url"].split('#')[0]
+                    if not VIDEO_HREF.search(href):
+                        continue
+                    if href not in seen:
+                        it["url"] = href
+                        seen[href] = it
 
-                    # Out-of-range pages sometimes re-serve the last page instead of 404
-                    if new_on_page == 0:
-                        print("No new videos on this page. Stopping.", flush=True)
-                        if page_num == 1:   # help debug selector / bot-wall problems
-                            body = (await page.inner_text("body"))[:300].replace("\n", " ")
-                            print(f"  [debug] final URL : {page.url}", flush=True)
-                            print(f"  [debug] title     : {await page.title()}", flush=True)
-                            print(f"  [debug] anchors   : {len(items)} matched, "
-                                  f"{await page.locator('a').count()} total on page", flush=True)
-                            print(f"  [debug] body start: {body}", flush=True)
-                        break
             finally:
                 await browser.close()
 
