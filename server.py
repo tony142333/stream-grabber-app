@@ -28,7 +28,7 @@ DOWNLOADS_PATH = os.path.expanduser("~/downloads")
 
 log_subscribers: set = set()   # one asyncio.Queue per open /api/logs connection
 main_loop = None
-PB_MAX_PARALLEL = 2            # simultaneous PB probe+download jobs
+PB_MAX_PARALLEL = int(os.environ.get("PB_MAX_PARALLEL", "2"))  # set by systemd on EC2; simultaneous PB probe+download jobs
 pb_semaphore = None
 pb_jobs: set = set()           # strong refs so background tasks aren't garbage-collected
 active_tasks = {}
