@@ -10,13 +10,18 @@ import shutil
 import signal
 from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request
+
+# Added BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
 from modules.config_manager.config_core import config_router, CONFIG_DIR
+
+# 1. Import the PB Engine
+from pimpbunny_engine import PimpBunnyEngine
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOADS_PATH = os.path.expanduser("~/downloads")
@@ -38,6 +43,10 @@ app = FastAPI(title="EC2 Stream Grabber Console", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 app.include_router(config_router, prefix="/api")
 
+# 2. Initialize the PB Engine
+pb_engine = PimpBunnyEngine(headless=True)
+
+# ----------------- Data Models ----------------- #
 class BatchRunRequest(BaseModel):
     urls: list[str]
 
@@ -47,6 +56,13 @@ class DownloadTriggerRequest(BaseModel):
     output_filename: str
     referer: str
     cookies: str = ""
+
+class CatalogRequest(BaseModel):
+    creator_url: str
+
+class BatchDownloadRequest(BaseModel):
+    video_urls: list[str]
+    quality: str = "1080p"
 
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
@@ -190,14 +206,21 @@ def download_process_worker(task_id: str, stream_url: str, output_file: str, ref
 
     active_tasks.pop(task_id, None)
 
+# ----------------- UI Routes ----------------- #
 @app.get("/")
 def index():
     return FileResponse(os.path.join(BASE_DIR, "templates", "index.html"))
+
+@app.get("/pb")
+def pb_dashboard():
+    # Matches your existing FileResponse pattern instead of Jinja2Templates
+    return FileResponse(os.path.join(BASE_DIR, "templates", "pb.html"))
 
 @app.get("/api/config-panel-template")
 def get_config_panel_template():
     return FileResponse(os.path.join(CONFIG_DIR, "config_panel.html"))
 
+# ----------------- System Endpoints ----------------- #
 @app.get("/api/sysinfo")
 def get_sys_info():
     total, used, free = shutil.disk_usage(DOWNLOADS_PATH)
@@ -364,6 +387,59 @@ async def stream_logs():
             else:
                 await asyncio.sleep(0.1)
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# ----------------- PB Bulk Scraper Endpoints ----------------- #
+@app.post("/api/pb/catalog")
+async def get_catalog(payload: CatalogRequest):
+    """Crawl paginated creator pages and return a list of video links."""
+    urls = await pb_engine.get_creator_videos(payload.creator_url)
+    return {"status": "success", "count": len(urls), "videos": urls}
+
+async def process_batch_job(video_urls: list[str], quality: str):
+    """Background worker to probe each selected video and dispatch to existing download worker."""
+    loop = asyncio.get_running_loop()
+
+    for url in video_urls:
+        push_log_sync(f"[PB Worker] Probing: {url}")
+        probe_data = await pb_engine.probe_video(url)
+
+        target_stream = probe_data.get("streams", {}).get(quality)
+        if not target_stream:
+            available = probe_data.get("available_qualities", [])
+            if available:
+                fallback_quality = available[0]
+                target_stream = probe_data.get("streams", {}).get(fallback_quality)
+                push_log_sync(f"[PB Worker] {quality} not found for {url}. Falling back to {fallback_quality}.")
+
+        if target_stream:
+            push_log_sync(f"[PB Worker] Ready to download: {target_stream}")
+
+            # Generate a new task ID and filename for your existing download loop
+            t_id = uuid.uuid4().hex[:6]
+            # Use the last part of the URL as a clean filename, or default to a timestamp
+            safe_name = url.strip('/').split('/')[-1] if url else f"pb_batch_{t_id}"
+            output_filename = f"{safe_name}_{quality}.mp4"
+
+            # Dispatch to your exact existing download worker
+            loop.run_in_executor(
+                None, download_process_worker,
+                t_id, target_stream, output_filename,
+                probe_data.get("referer", ""), probe_data.get("cookies", "")
+            )
+        else:
+            push_log_sync(f"[PB Worker] Failed to extract any stream for {url}")
+
+@app.post("/api/pb/queue")
+async def queue_batch(payload: BatchDownloadRequest, background_tasks: BackgroundTasks):
+    """Enqueues selected videos for asynchronous processing."""
+    if not payload.video_urls:
+        return {"status": "error", "message": "No videos selected."}
+
+    background_tasks.add_task(process_batch_job, payload.video_urls, payload.quality)
+    return {
+        "status": "queued",
+        "message": f"Added {len(payload.video_urls)} videos to the queue at {payload.quality}."
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8085)
