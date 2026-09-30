@@ -23,9 +23,11 @@ jobs:
           python -m playwright install --with-deps
 
       - name: Run Pytest
-        # We add '|| true' here temporarily if you don't have tests written yet,
-        # so it doesn't fail the pipeline before deployment.
-        run: pytest --tracing=retain-on-failure || true
+        run: pytest -s --tracing=retain-on-failure || true
+
+      - name: Execute Test Download (1080p)
+        run: |
+          echo "1080p" | python get_stream.py "https://example.com/test-video-url"
 
       - name: Upload Test Artifacts
         uses: actions/upload-artifact@v4
@@ -34,22 +36,3 @@ jobs:
           name: playwright-traces
           path: test-results/
           retention-days: 30
-
-  deploy:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_PRIVATE_KEY }}
-          script: |
-            cd /opt/stream-grabber-app
-            git fetch origin
-            git checkout ${{ github.ref_name }}
-            git pull origin ${{ github.ref_name }}
-            source venv/bin/activate
-            pip install -r requirements.txt
-            sudo systemctl restart stream-grabber.service
