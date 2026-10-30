@@ -31,7 +31,7 @@ target_segment = "downloaded_video"
 for s in reversed(segments):
     cleaned = re.sub(r'\.(html|htm|php|asp|aspx)$', '', s, flags=re.IGNORECASE)
     cleaned = re.sub(r'[^a-zA-Z0-9_\-]', '_', cleaned).strip("._")
-    if len(cleaned) > 2 and cleaned.lower() not in ["video", "watch", "play", "view", "v"]:
+    if len(cleaned) > 2 and cleaned.lower() not in ["video", "watch", "play", "view", "v", "porn"]:
         target_segment = cleaned
         break
 else:
