@@ -210,4 +210,4 @@ class PimpBunnyEngine:
 if __name__ == "__main__":
     engine = PimpBunnyEngine(headless=True)
     test_url = "https://pimpbunny.com/the-nanny-s-secret_v1/"
-    print(json.dumps(asyncio.run(engine.probe_video(test_url)), indent=4))
+    print(json.dumps(asyncio.run(engine.probe_video(test_url)), indent=4)) ##testing now
