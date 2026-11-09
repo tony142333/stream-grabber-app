@@ -21,10 +21,10 @@ LINK_JS = """
     // Class names like "ui-card-link__KxRw6l" carry a build hash, so match on the stable prefix.
     // "b6m-video" is a plain, unhashed class on the card.
     const anchors = Array.from(document.querySelectorAll(
-        '.b6m-video a[href], [class*="ui-card-video"] a[href], a[class*="ui-card-link"][href], a[href*="/videos/"]'
+        '.b6m-video a[href], [class*="ui-card-video"] a[href], a[class*="ui-card-link"][href], a[href*="/videos/"], article a[href]'
     ));
     return anchors.map(a => {
-        const card = a.closest('.b6m-video, [class*="ui-card-video"]') || a.parentElement;
+        const card = a.closest('.b6m-video, [class*="ui-card-video"], article') || a.parentElement;
         const img = card ? card.querySelector('img') : null;
         const info = card ? card.querySelector('[class*="ui-card-info"]') : null;
         return {
@@ -53,21 +53,35 @@ class PimpBunnyEngine:
         print(f"Starting bulk scrape for: {base_url}", flush=True)
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=self.headless)
-            context = await browser.new_context(user_agent=UA)
+            browser = await p.chromium.launch(
+                headless=self.headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                ]
+            )
+            context = await browser.new_context(
+                user_agent=UA,
+                viewport={"width": 1920, "height": 1080},
+                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"}
+            )
             page = await context.new_page()
             try:
                 target = f"{base_url}/"
                 print(f"Scraping page: {target}", flush=True)
 
-                response = await page.goto(target, wait_until="domcontentloaded")
+                response = await page.goto(target, wait_until="domcontentloaded", timeout=45000)
                 if response is None or response.status >= 400:
-                    print("Failed to load page.", flush=True)
+                    status_code = response.status if response else 'None'
+                    print(f"Failed to load page. Status: {status_code}", flush=True)
                     return []
 
-                # cards may be rendered client-side; give them a moment to appear
+                # Give dynamic elements time to hydrate/render
+                await page.wait_for_timeout(3000)
                 try:
-                    await page.wait_for_selector('a[href*="/videos/"]', timeout=15000)
+                    await page.wait_for_selector('a[href*="/videos/"], article a', timeout=15000)
                 except Exception:
                     pass
 
@@ -80,6 +94,14 @@ class PimpBunnyEngine:
                         it["url"] = href
                         seen[href] = it
 
+            except Exception as e:
+                print(f"Exception during crawl: {e}", flush=True)
+                try:
+                    content = await page.content()
+                    with open("pb_probe_debug.html", "w", encoding="utf-8") as f:
+                        f.write(content)
+                except Exception:
+                    pass
             finally:
                 await browser.close()
 
@@ -141,9 +163,20 @@ class PimpBunnyEngine:
             return found
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=self.headless)
+            browser = await p.chromium.launch(
+                headless=self.headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                ]
+            )
             try:
-                context = await browser.new_context(user_agent=UA)
+                context = await browser.new_context(
+                    user_agent=UA,
+                    viewport={"width": 1920, "height": 1080}
+                )
                 page = await context.new_page()
                 page.on("request", on_request)
 
@@ -167,28 +200,31 @@ class PimpBunnyEngine:
                 cookies = await context.cookies()
                 cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
 
+                info = {}
                 if not qualities:
                     # last resort: what is the <video> element actually playing?
-                    info = await page.evaluate(
-                        "() => { const v = document.querySelector('video');"
-                        " return { h: v ? v.videoHeight : 0, src: v ? (v.currentSrc || v.src) : '',"
-                        " sources: Array.from(document.querySelectorAll('video source')).map(s => s.src) }; }")
-                    src = info.get("src") or ""
-                    if ".mp4" in src and info.get("h"):
-                        qualities[f"{info['h']}p"] = src
+                    try:
+                        info = await page.evaluate(
+                            "() => { const v = document.querySelector('video');"
+                            " return { h: v ? v.videoHeight : 0, src: v ? (v.currentSrc || v.src) : '',"
+                            " sources: Array.from(document.querySelectorAll('video source')).map(s => s.src) }; }")
+                        src = info.get("src") or ""
+                        if ".mp4" in src and info.get("h"):
+                            qualities[f"{info['h']}p"] = src
+                    except Exception:
+                        pass
 
                 if not qualities:
                     body = (await page.inner_text("body"))[:300].replace("\n", " ")
                     print(f"  [debug] final URL : {page.url}", flush=True)
                     print(f"  [debug] title     : {await page.title()}", flush=True)
-                    print(f"  [debug] <video>   : {await page.locator('video').count()} element(s), "
-                          f"info={info}", flush=True)
+                    print(f"  [debug] <video>   : element check failed or none found, info={info}", flush=True)
                     print(f"  [debug] media requests seen: {len(media_seen)}", flush=True)
                     for u in media_seen[:10]:
                         print(f"    {self._mask(u)[:200]}", flush=True)
                     print(f"  [debug] body start: {body}", flush=True)
                     try:
-                        with open("pb_probe_debug.html", "w") as f:
+                        with open("pb_probe_debug.html", "w", encoding="utf-8") as f:
                             f.write(self._mask(content))
                     except Exception:
                         pass
@@ -210,4 +246,4 @@ class PimpBunnyEngine:
 if __name__ == "__main__":
     engine = PimpBunnyEngine(headless=True)
     test_url = "https://pimpbunny.com/the-nanny-s-secret_v1/"
-    print(json.dumps(asyncio.run(engine.probe_video(test_url)), indent=4)) ##testing now
+    print(json.dumps(asyncio.run(engine.probe_video(test_url)), indent=4))
