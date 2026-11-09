@@ -2,6 +2,8 @@ import asyncio
 import json
 import re
 import time
+from urllib.parse import urljoin
+
 from playwright.async_api import async_playwright
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -36,6 +38,8 @@ LINK_JS = """
     });
 }
 """
+
+REDIRECT_CODES = (301, 302, 303, 307, 308)
 
 
 class PimpBunnyEngine:
@@ -136,6 +140,52 @@ class PimpBunnyEngine:
             except Exception:
                 continue
 
+    async def _resolve_and_validate(self, context, url, referer, label):
+        """
+        Use the live browser session (same cookies / UA / IP as the page) to request
+        the file with Range: bytes=0-0 and follow redirects manually, hop by hop.
+
+        Returns (ok, final_url, info_string).
+        On success final_url is the last URL in the redirect chain, which is the one
+        that actually serves bytes (it may carry its own token).
+        """
+        headers = {
+            "Referer": referer,
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Range": "bytes=0-0",
+        }
+        current = url
+        for hop in range(6):
+            try:
+                resp = await context.request.get(
+                    current,
+                    headers=headers,
+                    max_redirects=0,
+                    fail_on_status_code=False,
+                    timeout=30000,
+                )
+            except Exception as e:
+                print(f"  [resolve] {label} hop {hop}: request error {self._mask(str(e))[:160]}", flush=True)
+                return False, url, f"request error: {type(e).__name__}"
+
+            status = resp.status
+            loc = resp.headers.get("location", "")
+            crange = resp.headers.get("content-range", "")
+            print(f"  [resolve] {label} hop {hop}: HTTP {status} "
+                  f"{self._mask(current)[:110]}"
+                  f"{' -> ' + self._mask(loc)[:110] if loc else ''}"
+                  f"{' range=' + crange if crange else ''}", flush=True)
+
+            if status in REDIRECT_CODES and loc:
+                current = urljoin(current, loc)
+                continue
+            if status in (200, 206):
+                return True, current, f"HTTP {status} {crange}".strip()
+            return False, url, f"HTTP {status} at hop {hop}"
+
+        return False, url, "too many redirects"
+
     async def probe_video(self, video_url, max_wait=40):
         """
         Open one video page, return tokenized direct links per quality plus
@@ -143,15 +193,24 @@ class PimpBunnyEngine:
 
         Video pages keep loading ads/trackers forever, so we never wait for
         "networkidle": we load the DOM, then poll until a media link shows up.
+
+        Each link is then verified (and its redirects resolved) from inside the
+        browser session, so the downloader receives a URL that is known to work.
         """
         print(f"Probing video: {video_url}", flush=True)
-        sniffed = {}      # quality -> url captured from real network requests
-        media_seen = []   # every media-looking request (for diagnostics)
+        sniffed = {}        # quality -> url captured from real network requests
+        media_seen = []     # every media-looking request (for diagnostics)
+        media_headers = {}  # headers the browser itself sent on the first mp4 request
 
         def on_request(req):
             u = req.url
             if re.search(r"\.(mp4|m3u8|webm)(\?|/|$)", u):
                 media_seen.append(u)
+                if not media_headers:
+                    try:
+                        media_headers.update(req.headers)
+                    except Exception:
+                        pass
             m = re.search(r"_(\d{3,4})p\.mp4", u)
             if m:
                 sniffed[m.group(1) + "p"] = u
@@ -161,6 +220,9 @@ class PimpBunnyEngine:
             for full_url, quality in MP4_PATTERN.findall(html):
                 found[quality] = full_url.replace("&amp;", "&")
             return found
+
+        validated = {}
+        notes = {}
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -209,9 +271,6 @@ class PimpBunnyEngine:
                         played = True
                     await page.wait_for_timeout(1000)
 
-                cookies = await context.cookies()
-                cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-
                 info = {}
                 if not qualities:
                     # last resort: what is the <video> element actually playing?
@@ -225,6 +284,29 @@ class PimpBunnyEngine:
                             qualities[f"{info['h']}p"] = src
                     except Exception:
                         pass
+
+                # ---- verify + resolve every link inside the live browser session ----
+                if qualities:
+                    if media_headers:
+                        shown = {k: v for k, v in media_headers.items()
+                                 if k.lower() in ("range", "referer", "accept", "sec-fetch-dest",
+                                                  "sec-fetch-mode", "sec-fetch-site", "user-agent")}
+                        print(f"  [debug] headers the browser sent on its own mp4 request: {shown}", flush=True)
+                        print(f"  [debug] (all header names: {sorted(media_headers.keys())})", flush=True)
+
+                    ordered_try = sorted(qualities.items(), key=lambda kv: int(kv[0][:-1]), reverse=True)
+                    for q, u in ordered_try:
+                        ok, final_url, note = await self._resolve_and_validate(context, u, video_url, q)
+                        notes[q] = note
+                        if ok:
+                            validated[q] = final_url
+                    print(f"  [debug] browser-verified qualities: {list(validated.keys()) or 'NONE'}", flush=True)
+                    for q, n in notes.items():
+                        print(f"  [debug]   {q}: {n}", flush=True)
+
+                # cookies AFTER requests so any cookie set during redirects is included
+                cookies = await context.cookies()
+                cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
 
                 if not qualities:
                     try:
@@ -249,12 +331,20 @@ class PimpBunnyEngine:
         if not qualities:
             return {"error": "No media links found on the video page (see [debug] lines)."}
 
-        ordered = dict(sorted(qualities.items(), key=lambda kv: int(kv[0][:-1]), reverse=True))
+        # Prefer browser-verified (redirect-resolved) URLs. If a quality failed
+        # verification, still pass the original so behaviour never regresses.
+        final = {}
+        for q, original in qualities.items():
+            final[q] = validated.get(q, original)
+
+        ordered = dict(sorted(final.items(), key=lambda kv: int(kv[0][:-1]), reverse=True))
         return {
             "referer": video_url,
             "cookies": cookie_str,
+            "user_agent": UA,
             "streams": ordered,
             "available_qualities": list(ordered.keys()),  # highest first
+            "verified_qualities": sorted(validated.keys(), key=lambda s: int(s[:-1]), reverse=True),
         }
 
 
