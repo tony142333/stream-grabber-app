@@ -170,17 +170,24 @@ class PimpBunnyEngine:
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
+                    "--disable-gpu",
                 ]
             )
             try:
                 context = await browser.new_context(
                     user_agent=UA,
-                    viewport={"width": 1920, "height": 1080}
+                    viewport={"width": 1920, "height": 1080},
+                    locale="en-US",
+                    timezone_id="America/New_York"
                 )
                 page = await context.new_page()
                 page.on("request", on_request)
 
                 await page.goto(video_url, wait_until="domcontentloaded", timeout=60000)
+
+                # Wait extra time for any Cloudflare/security challenge to automatically pass
+                print("Waiting for potential security check / challenge to clear...", flush=True)
+                await page.wait_for_timeout(7000)
 
                 qualities, content, played = {}, "", False
                 t0 = time.monotonic()
