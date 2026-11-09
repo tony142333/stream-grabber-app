@@ -185,13 +185,18 @@ class PimpBunnyEngine:
                 qualities, content, played = {}, "", False
                 t0 = time.monotonic()
                 while time.monotonic() - t0 < max_wait:
-                    content = (await page.content()).replace("\\/", "/")
-                    qualities = {**scan(content), **sniffed}
-                    if qualities:
-                        await page.wait_for_timeout(2000)   # let the other qualities show up too
+                    try:
                         content = (await page.content()).replace("\\/", "/")
                         qualities = {**scan(content), **sniffed}
-                        break
+                        if qualities:
+                            await page.wait_for_timeout(2000)   # let other qualities show up
+                            content = (await page.content()).replace("\\/", "/")
+                            qualities = {**scan(content), **sniffed}
+                            break
+                    except Exception:
+                        # Ignore transient navigation content-refresh errors
+                        pass
+
                     if not played and time.monotonic() - t0 > 6:
                         await self._try_play(page)
                         played = True
@@ -215,7 +220,10 @@ class PimpBunnyEngine:
                         pass
 
                 if not qualities:
-                    body = (await page.inner_text("body"))[:300].replace("\n", " ")
+                    try:
+                        body = (await page.inner_text("body"))[:300].replace("\n", " ")
+                    except Exception:
+                        body = "Could not retrieve body text during navigation."
                     print(f"  [debug] final URL : {page.url}", flush=True)
                     print(f"  [debug] title     : {await page.title()}", flush=True)
                     print(f"  [debug] <video>   : element check failed or none found, info={info}", flush=True)
